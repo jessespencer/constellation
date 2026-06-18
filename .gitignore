@@ -1,0 +1,19 @@
+# exports (your private chat data — never commit)
+/Claude/
+/Chat GPT/
+
+# pipeline
+pipeline/.venv/
+pipeline/cache/
+__pycache__/
+*.pyc
+
+# generated map outputs (rebuild with `make map`)
+viewer/public/map.json
+viewer/public/conversations/
+
+# viewer
+viewer/node_modules/
+viewer/dist/
+viewer/tsconfig.tsbuildinfo
+.DS_Store
