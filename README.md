@@ -1,4 +1,4 @@
-# Conversation Atlas — local semantic map of my AI chats
+# Constellation — local semantic map of my AI chats
 
 Places every Claude and ChatGPT conversation as a dot on a 2D semantic map:
 **proximity = topical similarity**, dots **colored by discovered theme**. Hover
