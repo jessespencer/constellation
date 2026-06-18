@@ -201,7 +201,7 @@ export default function App() {
     <div className="app">
       <div className="topbar">
         <div className="brand">
-          Conversation Atlas
+          Constellation
           <span className="brand-sub">
             {data.meta.n.toLocaleString()} conversations · {data.meta.n_clusters} themes ·{" "}
             {(data.edges?.length ?? 0).toLocaleString()} links
