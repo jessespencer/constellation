@@ -2,6 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+**[▶ Live demo](https://jessespencer.github.io/constellation/)** — explore a map
+built from synthetic sample conversations (no real data).
+
 Places every Claude and ChatGPT conversation as a dot on a 2D semantic map:
 **proximity = topical similarity**, dots **colored by discovered theme**. Hover
 for details, click for the full transcript, search to highlight, toggle between
@@ -82,6 +85,20 @@ Both exports are free and stay on your machine:
 Unzip each export into the repo root (e.g. `Claude/` and `Chat GPT/`, as
 `.gitignore` already expects) and run `make map`. Both directories are
 git-ignored, so your chat data is never committed.
+
+### Let Claude Code do it
+
+If you have [Claude Code](https://claude.com/claude-code), you can skip the
+manual steps. From the repo, point it at your downloaded exports:
+
+```
+> I've downloaded my Claude and ChatGPT data exports to ~/Downloads.
+  Unzip them into this repo's root, then run `make map` and start the viewer.
+```
+
+It'll unzip the archives, drop the `conversations*.json` where the pipeline
+expects them, build the map, and launch the dev server — all locally, nothing
+uploaded.
 
 ### Pointing at your exports
 
