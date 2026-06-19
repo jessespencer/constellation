@@ -2,6 +2,9 @@
 /Claude/
 /Chat GPT/
 
+# generated synthetic demo exports (rebuild with `make sample`)
+/sample/
+
 # pipeline
 pipeline/.venv/
 pipeline/cache/

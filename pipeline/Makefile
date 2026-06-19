@@ -15,7 +15,9 @@ PIP     := $(VENV)/bin/pip
 INPUT   ?= ..
 OUT     ?= ../viewer/public
 
-.PHONY: map venv install clean categories
+SAMPLE  ?= ../sample
+
+.PHONY: map venv install clean categories sample demo
 
 # Full build: discover layout/edges, then reassign to the curated high-level
 # taxonomy (taxonomy.py) for coherent, human-readable theme categories.
@@ -41,6 +43,15 @@ venv:
 install: venv
 	$(PIP) install -q --upgrade pip
 	$(PIP) install -q -r requirements.txt
+
+# Generate a synthetic Claude + ChatGPT export (no personal data needed).
+sample: install
+	$(PY) sample_data.py $(SAMPLE)
+
+# One-shot demo: synthesize sample exports, then build the map from them.
+# `make demo` then `cd ../viewer && npm install && npm run dev`.
+demo: sample
+	$(MAKE) map INPUT=$(SAMPLE)
 
 clean:
 	rm -rf $(OUT)/map.json $(OUT)/conversations
