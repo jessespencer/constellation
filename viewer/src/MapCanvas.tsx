@@ -14,17 +14,21 @@ import type {
   Layout,
   ResolvedEdge,
 } from "./types";
-import { SOURCE_COLORS } from "./types";
-import { worldToScreen, type Dims } from "./projection";
+import { SOURCE_COLORS, themeColor } from "./types";
+import { heatColor, heatBucket } from "./heat";
+import { worldToScreen, baseScale, type Dims } from "./projection";
 
-const BG = "#f4f1ea"; // warm paper tone
-const DOT_R = 2.6;
-const INK = "#39332e";
-const BRIDGE_INK = "#b0673f"; // warm accent for cross-cluster links
+const DOT_R = 1.5; // crisp star core radius (world-ish base, scaled by zoom)
+const GLOW_MULT = 3.0; // glow sprite diameter relative to core radius (minimal)
+const MAX_GLOW = 15; // px cap so cores stay crisp points, never a bloom blob
 const REGION_PAD = 5; // world units to expand cluster hulls
+
+const EDGE_RGB = "130,205,235"; // light cyan hairline (echoes the bridge accent, kept faint)
+const ACCENT_RGB = "95,220,255"; // bridge / active
 
 export interface MapCanvasHandle {
   redraw: () => void;
+  fit: () => void;
 }
 
 interface Props {
@@ -35,13 +39,16 @@ interface Props {
   mapPos: Float32Array;
   constPosRef: React.MutableRefObject<Float32Array>;
   nodeScale: Float32Array; // per-node size multiplier (size-by metric)
+  heat: Float32Array; // per-node density intensity 0..1 (heat color mode)
   edges: ResolvedEdge[];
   adjacency: number[][];
   clusterColor: Map<number, string>;
   colorMode: ColorMode;
   query: string;
+  showEdges: boolean;
   bridgesOnly: boolean;
   showRegions: boolean;
+  showOrphans: boolean;
   regionsVersion: number;
   selectedId: string | null;
   selectedIndex: number; // -1 when nothing selected
@@ -58,29 +65,72 @@ function colorFor(
 ): string {
   return colorMode === "source"
     ? SOURCE_COLORS[n.source]
-    : clusterColor.get(n.cluster) ?? "#c8c2b6";
+    : clusterColor.get(n.cluster) ?? themeColor(n.cluster);
 }
 
 const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const transformRef = useRef<ZoomTransform>(zoomIdentity);
+  const zoomRef = useRef<ReturnType<typeof zoom<HTMLCanvasElement, unknown>> | null>(null);
   const hoverRef = useRef<number>(-1);
   const rafRef = useRef<number>(0);
   const downPos = useRef<[number, number]>([0, 0]); // to tell clicks from pans
+  const bgRef = useRef<{ key: string; grad: CanvasGradient } | null>(null);
+  // pre-rendered soft glow sprites, one per color (avoids per-node shadowBlur)
+  const glowCache = useRef<Map<string, HTMLCanvasElement>>(new Map());
   // cached per-cluster convex hulls in WORLD space (recomputed only when the
   // layout/positions actually change, not on every hover redraw)
   const hullCache = useRef<{ key: string; hulls: Map<number, [number, number][]> }>({
     key: "",
     hulls: new Map(),
   });
-
   // latest props for the imperative redraw + d3 handlers (avoids stale closures)
   const p = useRef(props);
   p.current = props;
 
+  // Map snaps straight to its true semantic positions; only Constellation
+  // animates (its bloom is driven by the force worker via constPosRef).
   function positions(): Float32Array {
     const { layout, constPosRef, mapPos } = p.current;
     return layout === "constellation" ? constPosRef.current : mapPos;
+  }
+
+  // one soft radial glow sprite per color, lazily built and cached
+  function glowSprite(color: string): HTMLCanvasElement {
+    const cached = glowCache.current.get(color);
+    if (cached) return cached;
+    const S = 96;
+    const c = document.createElement("canvas");
+    c.width = S;
+    c.height = S;
+    const g = c.getContext("2d")!;
+    const grad = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    grad.addColorStop(0, hexA(color, 0.8));
+    grad.addColorStop(0.3, hexA(color, 0.2));
+    grad.addColorStop(0.6, hexA(color, 0.04));
+    grad.addColorStop(1, hexA(color, 0));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, S, S);
+    glowCache.current.set(color, c);
+    return c;
+  }
+
+  function background(ctx: CanvasRenderingContext2D, w: number, h: number) {
+    const key = `${w}x${h}`;
+    if (!bgRef.current || bgRef.current.key !== key) {
+      // radial-gradient(130% 105% at 50% 28%, ...) approximated in canvas
+      const cx = w * 0.5;
+      const cy = h * 0.08;
+      const r = Math.hypot(w, h) * 0.85;
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      grad.addColorStop(0, "#0b0d18");
+      grad.addColorStop(0.5, "#070811");
+      grad.addColorStop(0.8, "#040509");
+      grad.addColorStop(1, "#020206");
+      bgRef.current = { key, grad };
+    }
+    ctx.fillStyle = bgRef.current.grad;
+    ctx.fillRect(0, 0, w, h);
   }
 
   function computeHulls() {
@@ -102,7 +152,6 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       if (pts.length < 3) continue;
       const hull = polygonHull(pts);
       if (!hull) continue;
-      // centroid of hull, then push each vertex outward for a soft padded blob
       let hx = 0,
         hy = 0;
       for (const [x, y] of hull) {
@@ -133,13 +182,13 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     x2: number,
     y2: number
   ) {
-    // slight perpendicular bow for an organic, hand-drawn feel
+    // slight perpendicular bow for an organic feel
     const mx = (x1 + x2) / 2;
     const my = (y1 + y2) / 2;
     const dx = x2 - x1;
     const dy = y2 - y1;
     const len = Math.hypot(dx, dy) || 1;
-    const off = Math.min(len * 0.12, 26);
+    const off = Math.min(len * 0.1, 22);
     const cx = mx - (dy / len) * off;
     const cy = my + (dx / len) * off;
     ctx.beginPath();
@@ -156,15 +205,17 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       dims,
       layout,
       nodeScale,
+      heat,
       edges,
       adjacency,
       colorMode,
       clusterColor,
       query,
+      showEdges,
       bridgesOnly,
       showRegions,
+      showOrphans,
       settling,
-      selectedId,
       selectedIndex,
     } = p.current;
     const ctx = canvas.getContext("2d")!;
@@ -175,8 +226,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
 
     ctx.save();
     ctx.scale(dpr, dpr);
-    ctx.fillStyle = BG;
-    ctx.fillRect(0, 0, dims.width, dims.height);
+    background(ctx, dims.width, dims.height);
 
     // project every node once
     const sx = new Float32Array(n);
@@ -190,7 +240,6 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     // --- regions (under everything) ---
     if (showRegions && !settling) {
       const hulls = computeHulls();
-      ctx.globalCompositeOperation = "multiply";
       ctx.lineJoin = "round";
       for (const [c, worldPts] of hulls) {
         if (worldPts.length < 3) continue;
@@ -198,7 +247,6 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
           ([wx, wy]) => worldToScreen(wx, wy, dims, t) as [number, number]
         );
         ctx.beginPath();
-        // smoothed closed path through hull vertices (quadratic via midpoints)
         const m = pts.length;
         const mid0 = [(pts[m - 1][0] + pts[0][0]) / 2, (pts[m - 1][1] + pts[0][1]) / 2];
         ctx.moveTo(mid0[0], mid0[1]);
@@ -208,11 +256,11 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
           ctx.quadraticCurveTo(cur[0], cur[1], (cur[0] + nxt[0]) / 2, (cur[1] + nxt[1]) / 2);
         }
         ctx.closePath();
-        const col = clusterColor.get(c) ?? "#c8c2b6";
-        ctx.globalAlpha = 0.08;
+        const col = clusterColor.get(c) ?? themeColor(c);
+        ctx.globalAlpha = 0.07;
         ctx.fillStyle = col;
         ctx.fill();
-        ctx.globalAlpha = 0.14;
+        ctx.globalAlpha = 0.2;
         ctx.lineWidth = 1;
         ctx.strokeStyle = col;
         ctx.stroke();
@@ -221,8 +269,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     }
 
     // --- edges ---
-    // In Constellation, a clicked node LOCKS the focus so its subgraph persists
-    // for exploration; otherwise hover drives a transient preview.
+    // In Constellation, a clicked node LOCKS the focus so its subgraph persists.
     const locked = layout === "constellation" && selectedIndex >= 0 ? selectedIndex : -1;
     const hi = locked >= 0 ? locked : hoverRef.current;
     let neighbors: Set<number> | null = null;
@@ -235,61 +282,104 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     }
     const focused = hi >= 0 || bridgesOnly;
 
-    // faint background pass (multiply → overlapping edges pool like ink)
-    ctx.globalCompositeOperation = "multiply";
-    const strong: number[] = [];
-    for (let ei = 0; ei < edges.length; ei++) {
-      const e = edges[ei];
-      const isStrong = hi >= 0 ? e.si === hi || e.ti === hi : bridgesOnly && e.bridge;
-      if (isStrong) {
-        strong.push(ei);
-        continue;
+    // Constellation edges are drawn straight + uniform to match the 3D view's
+    // lines (the map keeps its organic quadratic bow).
+    const straightEdges = layout === "constellation";
+    const drawEdge = (x1: number, y1: number, x2: number, y2: number) => {
+      if (straightEdges) {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      } else {
+        curve(ctx, x1, y1, x2, y2);
       }
-      const a = focused ? 0.02 : 0.045 + e.w * 0.1;
-      ctx.globalAlpha = a;
-      ctx.lineWidth = 0.4 + e.w * 0.6;
-      ctx.strokeStyle = INK;
-      curve(ctx, sx[e.si], sy[e.si], sx[e.ti], sy[e.ti]);
+    };
+
+    ctx.globalCompositeOperation = "source-over";
+    const strong: number[] = [];
+    if (showEdges || focused) {
+      for (let ei = 0; ei < edges.length; ei++) {
+        const e = edges[ei];
+        const isStrong = hi >= 0 ? e.si === hi || e.ti === hi : bridgesOnly && e.bridge;
+        if (isStrong) {
+          strong.push(ei);
+          continue;
+        }
+        if (!showEdges) continue; // ambient field hidden
+        const a = focused ? 0.04 : straightEdges ? 0.1 : 0.1 + e.w * 0.08;
+        ctx.globalAlpha = a;
+        ctx.lineWidth = straightEdges ? 0.8 : 0.6 + e.w * 0.5;
+        ctx.strokeStyle = `rgb(${EDGE_RGB})`;
+        drawEdge(sx[e.si], sy[e.si], sx[e.ti], sy[e.ti]);
+      }
     }
 
-    // highlighted pass on top (source-over for crisp emphasis)
-    ctx.globalCompositeOperation = "source-over";
+    // highlighted pass on top, in accent cyan.
+    // Hover/selection should pop, but the standing Bridges layer stays soft —
+    // thin, faint hairlines that match the 3D view instead of a bright cyan wall.
+    const hoverFocus = hi >= 0;
     for (const ei of strong) {
       const e = edges[ei];
-      const bridgeStyle = bridgesOnly && e.bridge && hi < 0;
-      ctx.globalAlpha = (bridgeStyle ? 0.45 : 0.5) + e.w * 0.4;
-      ctx.lineWidth = 0.8 + e.w * (bridgeStyle ? 1.3 : 1.5);
-      ctx.strokeStyle = bridgeStyle ? BRIDGE_INK : INK;
-      curve(ctx, sx[e.si], sy[e.si], sx[e.ti], sy[e.ti]);
+      // Standing Bridges layer matches the 3D view's material verbatim:
+      // flat 0.55 opacity, uniform thin line. Hover/selection still pops.
+      ctx.globalAlpha = hoverFocus ? 0.5 + e.w * 0.35 : 0.55;
+      ctx.lineWidth = hoverFocus ? 0.9 + e.w * 1.4 : 1;
+      ctx.strokeStyle = `rgba(${ACCENT_RGB},${hoverFocus ? 0.85 : 1})`;
+      drawEdge(sx[e.si], sy[e.si], sx[e.ti], sy[e.ti]);
     }
     ctx.globalAlpha = 1;
 
-    // --- nodes ---
+    // --- node glow (additive sprites — dense clusters bloom, orphans stay faint) ---
+    // Density-heat mode is the default: intensity drives BOTH color (cool→warm)
+    // and glow size/brightness, so dense cores read as hot-spots on near-black.
+    const isHeat = colorMode === "density";
     const q = query.trim().toLowerCase();
     const zoomR = Math.sqrt(t.k);
-    const hoverIdx = hoverRef.current;
-    // when locked, background nodes are inert — dim them harder
-    const dimTo = locked >= 0 ? 0.05 : 0.12;
+    const dimTo = locked >= 0 ? 0.04 : 0.1;
+    ctx.globalCompositeOperation = "lighter";
     for (let i = 0; i < n; i++) {
       const node = data.nodes[i];
+      if (!showOrphans && adjacency[i].length === 0) continue;
       const match = !q || node.title.toLowerCase().includes(q);
-      let a = 0.85;
-      if (q && !match) a = 0.07;
+      const ti = isHeat ? heat[i] || 0 : 0;
+      let a = isHeat ? 0.14 + ti * 0.5 : 0.5;
+      if (q && !match) a = 0.04;
       if (neighbors && !neighbors.has(i)) a = Math.min(a, dimTo);
-      const isSel = node.id === selectedId;
+      const r = Math.max(0.6, DOT_R * (nodeScale[i] || 1) * zoomR);
+      const glowScale = isHeat ? Math.min(1.5, 0.4 + ti * 1.0) : 1;
+      const gr = Math.min(MAX_GLOW, r * GLOW_MULT * glowScale);
+      ctx.globalAlpha = a;
+      const col = isHeat ? heatColor(heatBucket(ti)) : colorFor(node, colorMode, clusterColor);
+      ctx.drawImage(glowSprite(col), sx[i] - gr, sy[i] - gr, gr * 2, gr * 2);
+    }
+
+    // --- crisp star cores on top ---
+    ctx.globalCompositeOperation = "source-over";
+    const hoverIdx = hoverRef.current;
+    for (let i = 0; i < n; i++) {
+      const node = data.nodes[i];
+      if (!showOrphans && adjacency[i].length === 0) continue;
+      const match = !q || node.title.toLowerCase().includes(q);
+      const ti = isHeat ? heat[i] || 0 : 0;
+      let a = isHeat ? 0.6 + ti * 0.4 : 0.95;
+      if (q && !match) a = 0.08;
+      if (neighbors && !neighbors.has(i)) a = Math.min(a, dimTo + 0.04);
       const isHover = i === hoverIdx;
-      const r = DOT_R * (nodeScale[i] || 1) * zoomR;
-      const rr = isSel ? r + 2.5 : isHover ? r + 2 : r;
+      const r = Math.max(0.6, DOT_R * (nodeScale[i] || 1) * zoomR) * (isHover ? 1.5 : 1);
       ctx.beginPath();
-      ctx.arc(sx[i], sy[i], rr, 0, Math.PI * 2);
-      ctx.fillStyle = colorFor(node, colorMode, clusterColor);
+      ctx.arc(sx[i], sy[i], r, 0, Math.PI * 2);
+      ctx.fillStyle = isHeat ? heatColor(ti) : colorFor(node, colorMode, clusterColor);
       ctx.globalAlpha = a;
       ctx.fill();
-      if (isSel || isHover) {
-        ctx.globalAlpha = 1;
-        ctx.lineWidth = isSel ? 1.5 : 1.1;
-        ctx.strokeStyle = isSel ? "#2b2b2b" : "#5a534a";
-        ctx.stroke();
+      // faint white center only on the hottest cores — keep it minimal
+      const showCore = isHeat ? ti > 0.7 && r > 1.0 : r > 1.4;
+      if (showCore) {
+        ctx.beginPath();
+        ctx.arc(sx[i], sy[i], r * 0.4, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
+        ctx.globalAlpha = a * 0.55;
+        ctx.fill();
       }
     }
     ctx.globalAlpha = 1;
@@ -305,7 +395,43 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     });
   }
 
-  useImperativeHandle(ref, () => ({ redraw: scheduleDraw }), []);
+  // Reset pan/zoom so every (visible) node is framed in the viewport.
+  function fit() {
+    const canvas = canvasRef.current;
+    const zoomBehavior = zoomRef.current;
+    if (!canvas || !zoomBehavior) return;
+    const { data, dims, showOrphans, adjacency } = p.current;
+    if (!dims.width || !dims.height) return;
+    const pos = positions();
+    const s = baseScale(dims);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < data.nodes.length; i++) {
+      if (!showOrphans && adjacency[i].length === 0) continue;
+      const bx = dims.width / 2 + pos[2 * i] * s;
+      const by = dims.height / 2 - pos[2 * i + 1] * s;
+      if (bx < minX) minX = bx;
+      if (by < minY) minY = by;
+      if (bx > maxX) maxX = bx;
+      if (by > maxY) maxY = by;
+    }
+    if (!isFinite(minX)) return;
+    const pad = 0.12; // leave a margin around the framed structure
+    const bw = maxX - minX || 1;
+    const bh = maxY - minY || 1;
+    const k = Math.max(
+      0.4,
+      Math.min(40, dims.width * (1 - pad) / bw, dims.height * (1 - pad) / bh)
+    );
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const t = zoomIdentity
+      .translate(dims.width / 2 - k * cx, dims.height / 2 - k * cy)
+      .scale(k);
+    // route through the zoom behavior so transformRef/onTransform stay in sync
+    select(canvas).call(zoomBehavior.transform, t);
+  }
+
+  useImperativeHandle(ref, () => ({ redraw: scheduleDraw, fit }), []);
 
   // size + retina
   useEffect(() => {
@@ -329,11 +455,14 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     props.layout,
     props.colorMode,
     props.nodeScale,
+    props.heat,
     props.query,
     props.selectedId,
     props.selectedIndex,
+    props.showEdges,
     props.bridgesOnly,
     props.showRegions,
+    props.showOrphans,
     props.regionsVersion,
     props.dims,
   ]);
@@ -350,10 +479,10 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
         p.current.onTransform(event.transform);
         scheduleDraw();
       });
+    zoomRef.current = zoomBehavior;
     sel.call(zoomBehavior);
     sel.call(zoomBehavior.transform, transformRef.current);
 
-    // when locked, only the focused node + its neighbors are interactive
     function focusCandidates(): number[] | null {
       if (!isLocked()) return null;
       const li = p.current.selectedIndex;
@@ -367,10 +496,11 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     function nearest(mx: number, my: number): number {
       const t = transformRef.current;
       const pos = positions();
-      const hitR = (DOT_R * Math.sqrt(t.k) + 4) ** 2;
+      const hitR = (DOT_R * Math.sqrt(t.k) + 5) ** 2;
       let best = -1;
       let bestD = hitR;
       const consider = (i: number) => {
+        if (!p.current.showOrphans && p.current.adjacency[i].length === 0) return;
         const [sx, sy] = worldToScreen(pos[2 * i], pos[2 * i + 1], p.current.dims, t);
         const d = (sx - mx) ** 2 + (sy - my) ** 2;
         if (d < bestD) {
@@ -384,7 +514,6 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       return best;
     }
 
-    // true when a clicked node is locking the isolated subgraph in place
     const isLocked = () =>
       p.current.layout === "constellation" && p.current.selectedIndex >= 0;
 
@@ -395,7 +524,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       const idx = nearest(mx, my);
       if (idx !== hoverRef.current) {
         hoverRef.current = idx;
-        scheduleDraw(); // redraw for the hover cue (focus-restricted when locked)
+        scheduleDraw();
       }
       p.current.onHover(idx >= 0 ? p.current.data.nodes[idx] : null, [mx, my]);
       canvas!.style.cursor = idx >= 0 ? "pointer" : "grab";
@@ -404,13 +533,12 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       downPos.current = [e.clientX, e.clientY];
     }
     function onClick(e: MouseEvent) {
-      // ignore clicks that were really pans/drags
       const moved = Math.hypot(e.clientX - downPos.current[0], e.clientY - downPos.current[1]);
       if (moved > 5) return;
       const rect = canvas!.getBoundingClientRect();
       const idx = nearest(e.clientX - rect.left, e.clientY - rect.top);
       if (idx >= 0) p.current.onSelect(p.current.data.nodes[idx]);
-      else p.current.onBackground(); // empty space releases the lock
+      else p.current.onBackground();
     }
     function onLeave() {
       if (hoverRef.current !== -1) {
@@ -420,7 +548,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       p.current.onHover(null, [0, 0]);
     }
 
-    canvas.addEventListener("mousedown", onDown, true); // capture: beat d3-zoom
+    canvas.addEventListener("mousedown", onDown, true);
     canvas.addEventListener("mousemove", onMove);
     canvas.addEventListener("click", onClick);
     canvas.addEventListener("mouseleave", onLeave);
@@ -436,5 +564,15 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
 
   return <canvas ref={canvasRef} style={{ display: "block" }} />;
 });
+
+// hex color -> rgba string at the given alpha (handles #rgb and #rrggbb)
+function hexA(hex: string, alpha: number): string {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
 
 export default MapCanvas;

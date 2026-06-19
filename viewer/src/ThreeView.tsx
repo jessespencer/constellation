@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
@@ -8,12 +8,15 @@ import {
 import { computeBloom3D } from "./bloom3d";
 import type { MapData, NodeDatum, ColorMode, ResolvedEdge } from "./types";
 import { SOURCE_COLORS } from "./types";
+import { heatColor } from "./heat";
 import type { Dims } from "./projection";
 
-const PAPER = 0xf4f1ea;
-const INK = new THREE.Color(0x39332e); // match the 2D constellation edge ink
-const BRIDGE = new THREE.Color(0xb0673f);
-const BASE3D = 2.6; // == DOT_R in MapCanvas, so node sizes match the 2D view
+const INK = new THREE.Color(0x82cdeb); // light cyan edge hairline (echoes the bridge accent, kept faint)
+const BRIDGE = new THREE.Color(0x5fdcff); // accent cyan for cross-cluster links
+const BASE3D = 3.4; // node base size; minimal glow keeps stars crisp
+
+// once-per-page-load guard for the camera fly-in (re-arms on a full reload)
+let threeIntroPlayed = false;
 
 interface Props {
   data: MapData;
@@ -23,8 +26,12 @@ interface Props {
   clusterColor: Map<number, string>;
   colorMode: ColorMode;
   nodeScale: Float32Array;
+  heat: Float32Array;
   query: string;
+  showEdges: boolean;
   bridgesOnly: boolean;
+  showLabels: boolean;
+  showOrphans: boolean;
   onHover: (node: NodeDatum | null, screen: [number, number]) => void;
   onSelect: (node: NodeDatum) => void;
 }
@@ -50,14 +57,20 @@ const frag = `
   varying float vAlpha;
   void main() {
     vec2 c = gl_PointCoord - vec2(0.5);
-    float d = dot(c, c);
-    if (d > 0.25) discard;
-    float edge = smoothstep(0.25, 0.14, d);
-    gl_FragColor = vec4(vColor, vAlpha * edge);
+    float r = length(c) * 2.0;          // 0 center -> 1 edge
+    if (r > 1.0) discard;
+    float glow = pow(1.0 - r, 3.2);     // tight radial falloff (minimal halo)
+    float core = smoothstep(0.45, 0.0, r); // crisp star core
+    vec3 col = mix(vColor, vec3(1.0), core * 0.4);
+    gl_FragColor = vec4(col, vAlpha * (glow * 0.4 + core * 0.7));
   }
 `;
 
-export default function ThreeView(props: Props) {
+export interface ThreeViewHandle {
+  fit: () => void;
+}
+
+const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, ref) {
   const mountRef = useRef<HTMLDivElement>(null);
   // hold the latest props for callbacks inside the animation loop
   const p = useRef(props);
@@ -67,8 +80,24 @@ export default function ThreeView(props: Props) {
     geom: THREE.BufferGeometry;
     edgesObj: THREE.LineSegments;
     bridgesObj: THREE.LineSegments;
+    labelObjs: CSS2DObject[];
     bloom: ReturnType<typeof computeBloom3D>;
+    camera: THREE.PerspectiveCamera;
+    controls: OrbitControls;
+    cen: THREE.Vector3;
+    fitDist: number;
   } | null>(null);
+
+  // re-frame the camera to the initial bounding-sphere fit
+  useImperativeHandle(ref, () => ({
+    fit: () => {
+      const a = api.current;
+      if (!a) return;
+      a.camera.position.set(a.cen.x, a.cen.y, a.cen.z + a.fitDist);
+      a.controls.target.copy(a.cen);
+      a.controls.update();
+    },
+  }), []);
 
   // ---- build the scene once per data load ------------------------------- //
   useEffect(() => {
@@ -107,7 +136,7 @@ export default function ThreeView(props: Props) {
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setClearColor(PAPER, 1);
+    renderer.setClearColor(0x000000, 0); // transparent -> the stage's atlas gradient shows
     mount.appendChild(renderer.domElement);
 
     const labelRenderer = new CSS2DRenderer();
@@ -138,6 +167,7 @@ export default function ThreeView(props: Props) {
       fragmentShader: frag,
       transparent: true,
       depthWrite: false,
+      blending: THREE.AdditiveBlending, // overlapping stars bloom into bright patches
       uniforms: {
         uPixelRatio: { value: renderer.getPixelRatio() },
         uK: { value: 2 * fitDist }, // matches 2D dot size at the framing plane
@@ -165,13 +195,14 @@ export default function ThreeView(props: Props) {
       });
       return new THREE.LineSegments(g, m);
     }
-    const edgesObj = buildLines(edges, INK, 0.07); // ink + faintness like the 2D edges
-    const bridgesObj = buildLines(edges.filter((e) => e.bridge), BRIDGE, 0.45);
+    const edgesObj = buildLines(edges, INK, 0.1); // cool faint hairlines
+    const bridgesObj = buildLines(edges.filter((e) => e.bridge), BRIDGE, 0.55);
     bridgesObj.visible = false;
     scene.add(edgesObj);
     scene.add(bridgesObj);
 
     // floating theme labels
+    const labelObjs: CSS2DObject[] = [];
     for (const c of data.clusters) {
       if (c.id === -1) continue;
       const anchor = bloom.labelPos.get(c.id);
@@ -179,13 +210,15 @@ export default function ThreeView(props: Props) {
       const el = document.createElement("div");
       el.className = "three-label";
       el.textContent = c.label;
-      el.style.fontSize = `${bloom.labelSize.get(c.id)}px`;
+      // uniform category-heading size, matching the 2D map/constellation labels
+      el.style.fontSize = "12px";
       const obj = new CSS2DObject(el);
       obj.position.set(anchor[0], anchor[1], anchor[2]);
       scene.add(obj);
+      labelObjs.push(obj);
     }
 
-    api.current = { points, geom, edgesObj, bridgesObj, bloom };
+    api.current = { points, geom, edgesObj, bridgesObj, labelObjs, bloom, camera, controls, cen, fitDist };
 
     // ---- raycast hover / click ----
     const raycaster = new THREE.Raycaster();
@@ -233,10 +266,28 @@ export default function ThreeView(props: Props) {
     resize();
     window.addEventListener("resize", resize);
 
+    // intro (first page load only): ease the camera in from just a touch further
+    // out, so the constellation settles gently into frame rather than rushing the
+    // viewer. Kept subtle ("slight") since this is the first thing the site shows.
+    const INTRO_MS = 1800;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const playIntro = !threeIntroPlayed && !reduceMotion;
+    if (playIntro) threeIntroPlayed = true;
+    const introT0 = performance.now();
+    const startDist = playIntro ? fitDist * 1.28 : fitDist;
+    camera.position.set(cen.x, cen.y, cen.z + startDist);
+
     let raf = 0;
     const loop = () => {
       raf = requestAnimationFrame(loop);
       controls.update();
+      const e = (performance.now() - introT0) / INTRO_MS;
+      if (playIntro && e < 1) {
+        const k = 1 - Math.pow(1 - e, 3); // easeOutCubic
+        const dist = startDist + (fitDist - startDist) * k;
+        const dir = camera.position.clone().sub(controls.target).normalize();
+        camera.position.copy(controls.target).addScaledVector(dir, dist);
+      }
       renderer.render(scene, camera);
       labelRenderer.render(scene, camera);
     };
@@ -266,32 +317,37 @@ export default function ThreeView(props: Props) {
   useEffect(() => {
     const a = api.current;
     if (!a) return;
-    const { data, clusterColor, colorMode } = props;
+    const { data, clusterColor, colorMode, heat } = props;
     const attr = a.geom.getAttribute("aColor") as THREE.BufferAttribute;
     const col = new THREE.Color();
     data.nodes.forEach((nd, i) => {
       const hex =
-        colorMode === "source"
+        colorMode === "density"
+          ? heatColor(heat[i] || 0)
+          : colorMode === "source"
           ? SOURCE_COLORS[nd.source]
           : clusterColor.get(nd.cluster) ?? "#c8c2b6";
       col.set(hex);
       attr.setXYZ(i, col.r, col.g, col.b);
     });
     attr.needsUpdate = true;
-  }, [props.colorMode, props.clusterColor, props.data]);
+  }, [props.colorMode, props.clusterColor, props.data, props.heat]);
 
   // ---- size-by metric --------------------------------------------------- //
   useEffect(() => {
     const a = api.current;
     if (!a) return;
     const attr = a.geom.getAttribute("size") as THREE.BufferAttribute;
+    const isHeat = props.colorMode === "density";
     for (let i = 0; i < props.nodeScale.length; i++) {
-      attr.setX(i, BASE3D * (props.nodeScale[i] || 1));
+      // in density mode, dense cores bloom larger; sparse stay small points
+      const heatScale = isHeat ? 0.7 + (props.heat[i] || 0) * 1.1 : 1;
+      attr.setX(i, BASE3D * (props.nodeScale[i] || 1) * heatScale);
     }
     attr.needsUpdate = true;
-  }, [props.nodeScale]);
+  }, [props.nodeScale, props.colorMode, props.heat]);
 
-  // ---- search dim ------------------------------------------------------- //
+  // ---- search dim + orphan hiding --------------------------------------- //
   useEffect(() => {
     const a = api.current;
     if (!a) return;
@@ -299,18 +355,28 @@ export default function ThreeView(props: Props) {
     const q = props.query.trim().toLowerCase();
     props.data.nodes.forEach((nd, i) => {
       const match = !q || nd.title.toLowerCase().includes(q);
-      attr.setX(i, match ? 0.92 : 0.06);
+      // Orphan = no edges cleared the similarity threshold (the pipeline still
+      // assigns every node a theme cluster, so cluster === -1 is never set).
+      const hiddenOrphan = !props.showOrphans && (props.degree[i] || 0) === 0;
+      attr.setX(i, hiddenOrphan ? 0 : match ? 0.92 : 0.06);
     });
     attr.needsUpdate = true;
-  }, [props.query, props.data]);
+  }, [props.query, props.data, props.showOrphans, props.degree]);
 
-  // ---- bridges toggle --------------------------------------------------- //
+  // ---- edges / bridges toggle ------------------------------------------- //
   useEffect(() => {
     const a = api.current;
     if (!a) return;
-    a.edgesObj.visible = !props.bridgesOnly;
+    a.edgesObj.visible = props.showEdges && !props.bridgesOnly;
     a.bridgesObj.visible = props.bridgesOnly;
-  }, [props.bridgesOnly]);
+  }, [props.showEdges, props.bridgesOnly]);
+
+  // ---- labels toggle ---------------------------------------------------- //
+  useEffect(() => {
+    const a = api.current;
+    if (!a) return;
+    a.labelObjs.forEach((o) => (o.visible = props.showLabels));
+  }, [props.showLabels]);
 
   // ---- resize on dims change ------------------------------------------- //
   useEffect(() => {
@@ -321,4 +387,6 @@ export default function ThreeView(props: Props) {
   }, [props.dims]);
 
   return <div ref={mountRef} style={{ position: "absolute", inset: 0 }} />;
-}
+});
+
+export default ThreeView;

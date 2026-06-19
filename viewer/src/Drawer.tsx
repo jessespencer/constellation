@@ -37,9 +37,9 @@ export default function Drawer({ node, onClose }: Props) {
   return (
     <aside className="drawer">
       <header className="drawer-head">
-        <div>
+        <div className="drawer-meta">
           <span
-            className="source-tag"
+            className="chip"
             style={{ color: SOURCE_COLORS[node.source] }}
           >
             {node.source === "claude" ? "Claude" : "ChatGPT"}
