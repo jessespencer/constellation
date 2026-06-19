@@ -68,7 +68,7 @@ const frag = `
     float glow = pow(1.0 - r, 3.2);     // tight radial falloff (minimal halo)
     float core = smoothstep(0.45, 0.0, r); // crisp star core
     vec3 col = mix(vColor, vec3(1.0), core * 0.4);
-    gl_FragColor = vec4(col, vAlpha * (glow * 0.4 + core * 0.7));
+    gl_FragColor = vec4(col, vAlpha * (glow * 0.46 + core * 0.78));
   }
 `;
 

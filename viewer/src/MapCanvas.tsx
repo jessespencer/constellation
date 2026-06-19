@@ -359,7 +359,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       if (hiddenSources.has(node.source)) continue;
       const match = !q || node.title.toLowerCase().includes(q);
       const ti = isHeat ? heat[i] || 0 : 0;
-      let a = isHeat ? 0.14 + ti * 0.5 : 0.5;
+      let a = isHeat ? 0.16 + ti * 0.55 : 0.58;
       if (q && !match) a = 0.04;
       if (neighbors && !neighbors.has(i)) a = Math.min(a, dimTo);
       const r = Math.max(0.6, DOT_R * (nodeScale[i] || 1) * zoomR);
