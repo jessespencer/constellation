@@ -352,11 +352,6 @@ body {
   width: 218px;
   padding: 14px 15px 16px;
   z-index: 5;
-  transition: right 0.22s ease-out;
-}
-/* slide the panel clear of the chat drawer so it stays reachable */
-.app.drawer-open .layers {
-  right: calc(var(--drawer-w) + 16px);
 }
 
 /* ---- fit-to-screen control (bottom-left of the stage) ---- */

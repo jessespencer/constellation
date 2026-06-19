@@ -247,11 +247,19 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
       );
       renderer.domElement.style.cursor = idx >= 0 ? "pointer" : "grab";
     }
+    // track pointer-down so an orbit/pan drag doesn't count as a node click
+    let downPos: [number, number] = [0, 0];
+    function onDown(ev: PointerEvent) {
+      downPos = [ev.clientX, ev.clientY];
+    }
     function onClick(ev: PointerEvent) {
+      const moved = Math.hypot(ev.clientX - downPos[0], ev.clientY - downPos[1]);
+      if (moved > 5) return; // dragged to navigate — not a selection
       const idx = pick(ev);
       if (idx >= 0) p.current.onSelect(p.current.data.nodes[idx]);
     }
     renderer.domElement.addEventListener("pointermove", onMove);
+    renderer.domElement.addEventListener("pointerdown", onDown);
     renderer.domElement.addEventListener("click", onClick);
 
     // ---- resize ----
@@ -297,6 +305,7 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
       renderer.domElement.removeEventListener("pointermove", onMove);
+      renderer.domElement.removeEventListener("pointerdown", onDown);
       renderer.domElement.removeEventListener("click", onClick);
       controls.dispose();
       geom.dispose();
