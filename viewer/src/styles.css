@@ -382,6 +382,23 @@ body {
 .fit-btn:hover svg {
   color: var(--accent);
 }
+/* ---- build credit (bottom-right of the stage) ---- */
+.credit {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 5;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+  text-decoration: none;
+  transition: color 0.12s;
+}
+.credit:hover {
+  color: var(--accent);
+}
+
 .layers-head {
   font-family: var(--font-mono);
   font-size: 12px;

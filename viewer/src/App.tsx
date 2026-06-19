@@ -672,6 +672,15 @@ export default function App() {
           sizeMode={sizeMode}
           setSizeMode={setSizeMode}
         />
+
+        <a
+          className="credit"
+          href="https://jessedestroys.com/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          built by jessedestroys.com
+        </a>
       </div>
 
       <Drawer node={selected} onClose={() => setSelected(null)} />
