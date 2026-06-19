@@ -415,6 +415,31 @@ TOPICS: dict[str, dict] = {
     },
 }
 
+# Which topics bleed into each other in real usage (shared vocabulary). A
+# fraction of conversations blend a primary topic with one of its neighbors so
+# their text spans both — that's what pulls the theme-islands into a single
+# connected continent with visible cross-links, instead of isolated balls.
+ADJACENCY: dict[str, list[str]] = {
+    "Design & Branding": ["Software & Tech", "Art & Illustration"],
+    "Art & Illustration": ["Design & Branding", "Music & Audio", "Writing & Stories"],
+    "Music & Audio": ["Art & Illustration", "Writing & Stories"],
+    "Writing & Stories": ["Misc & Curiosity", "Faith & Spirituality", "Career & Work", "Art & Illustration"],
+    "Faith & Spirituality": ["Writing & Stories", "Misc & Curiosity"],
+    "Health & Wellness": ["Food & Cooking", "Misc & Curiosity", "Travel & Outdoors"],
+    "Food & Cooking": ["Health & Wellness", "Home & DIY"],
+    "Finance & Legal": ["Career & Work", "Shopping & Marketplace"],
+    "Career & Work": ["Finance & Legal", "Software & Tech", "Writing & Stories"],
+    "Software & Tech": ["Design & Branding", "Career & Work", "Misc & Curiosity"],
+    "Home & DIY": ["Shopping & Marketplace", "Food & Cooking"],
+    "Shopping & Marketplace": ["Home & DIY", "Finance & Legal"],
+    "Travel & Outdoors": ["Misc & Curiosity", "Health & Wellness"],
+    "Misc & Curiosity": ["Software & Tech", "Writing & Stories", "Health & Wellness",
+                         "Travel & Outdoors", "Finance & Legal"],
+}
+
+# Share of conversations that mix in a related second topic.
+P_BLEND = 0.35
+
 # Message-count long tail: (cumulative probability, min, max) exchanges.
 # One exchange = a user + an assistant turn, so msg_count ≈ 2 × exchanges.
 _EXCHANGE_TIERS = [
@@ -441,15 +466,37 @@ def _two_distinct(rng: random.Random, items: list[str]) -> tuple[str, str]:
     return a, b
 
 
-def _make_turns(rng: random.Random, topic: dict) -> list[tuple[str, str]]:
-    """Alternating user/assistant transcript; each exchange uses fresh vocab."""
+def _exchange(rng: random.Random, key: str) -> list[tuple[str, str]]:
+    """One user/assistant exchange drawn from topic `key`'s vocab."""
+    t = TOPICS[key]
+    x, y = _two_distinct(rng, t["nouns"])
+    return [
+        ("user", rng.choice(t["frames"]).format(x=x, y=y)),
+        ("assistant", rng.choice(t["replies"]).format(x=x, y=y)),
+    ]
+
+
+def _make_turns(rng: random.Random, primary: str) -> list[tuple[str, str]]:
+    """Transcript for one conversation. With probability P_BLEND it mixes in a
+    related secondary topic so the conversation sits *between* themes — this is
+    what links the map into a connected continent instead of isolated balls."""
+    n_ex = _n_exchanges(rng)
+    secondary = None
+    if rng.random() < P_BLEND and ADJACENCY.get(primary):
+        secondary = rng.choice(ADJACENCY[primary])
+        n_ex = max(n_ex, 2)  # need room for both topics to appear
+
+    # exchange #0 is always primary (so the title reads primary-flavored),
+    # remaining exchanges lean primary but pull in the secondary ~45% of the time
+    sources = [primary]
+    for _ in range(n_ex - 1):
+        sources.append(secondary if (secondary and rng.random() < 0.45) else primary)
+    if secondary and secondary not in sources:  # guarantee the blend shows up
+        sources[rng.randrange(1, len(sources))] = secondary
+
     turns: list[tuple[str, str]] = []
-    for _ in range(_n_exchanges(rng)):
-        x, y = _two_distinct(rng, topic["nouns"])
-        user = rng.choice(topic["frames"]).format(x=x, y=y)
-        asst = rng.choice(topic["replies"]).format(x=x, y=y)
-        turns.append(("user", user))
-        turns.append(("assistant", asst))
+    for key in sources:
+        turns.extend(_exchange(rng, key))
     return turns
 
 
@@ -534,8 +581,8 @@ def main() -> None:
     rng = random.Random(42)  # deterministic output
 
     conversations: list[tuple[str, list[tuple[str, str]]]] = []
-    for key in _allocate(rng, n):
-        turns = _make_turns(rng, TOPICS[key])
+    for primary in _allocate(rng, n):
+        turns = _make_turns(rng, primary)
         conversations.append((_title(turns), turns))
     rng.shuffle(conversations)
 
