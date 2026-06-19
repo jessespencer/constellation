@@ -109,11 +109,13 @@ export function computeBloom(data: MapData, degree: number[]): Bloom {
     targets[2 * i + 1] = radius * Math.sin(ang);
   }
 
-  // seeds: start collapsed near the center so the layout blooms open
+  // seeds: start most of the way out toward each target (with a little jitter),
+  // so the bloom opens from a near-final layout and just settles the rest in
+  const START_FRAC = 0.6; // 0 = collapsed at center, 1 = already at the target
   for (let i = 0; i < n; i++) {
     const rnd = mulberry32((i + 3) * 0xc2b2ae35);
-    seeds[2 * i] = (rnd() - 0.5) * 6;
-    seeds[2 * i + 1] = (rnd() - 0.5) * 6;
+    seeds[2 * i] = targets[2 * i] * START_FRAC + (rnd() - 0.5) * 8;
+    seeds[2 * i + 1] = targets[2 * i + 1] * START_FRAC + (rnd() - 0.5) * 8;
   }
 
   return { targets, seeds, nodeRadius, labelPos, labelSize, hubIndex };

@@ -1,10 +1,9 @@
 /// <reference lib="webworker" />
-// Relaxes the radial bloom off the main thread. Each node starts collapsed near
-// the center and is pulled toward its precomputed radial target (cx,cy) while
-// collision spreads overlaps — so the layout "blooms open" over ~8s, then
+// Relaxes the radial bloom off the main thread. Each node starts near its
+// precomputed radial target (cx,cy) and is pulled the rest of the way in while
+// collision spreads overlaps — so the layout "blooms open" over ~4s, then
 // freezes. No link force: structure comes from the targets, edges are only
-// drawn, so the tufts stay splayed instead of clumping. The pull strength and
-// alpha decay are deliberately gentle so the bloom unfurls slowly.
+// drawn, so the tufts stay splayed instead of clumping.
 import {
   forceSimulation,
   forceManyBody,
@@ -39,8 +38,8 @@ self.onmessage = (ev: MessageEvent) => {
     .force("collide", forceCollide<SimNode>(1.3))
     .alpha(1)
     .alphaMin(0.02)
-    // slower cooldown stretches the bloom from ~4.5s to ~8s
-    .alphaDecay(0.0075)
+    // cooldown pace — nodes start near their targets, so a quicker settle (~4s)
+    .alphaDecay(0.015)
     .stop();
 
   const snapshot = (): Float32Array => {
