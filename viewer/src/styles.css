@@ -423,6 +423,20 @@ body {
 .layer-row.active svg {
   color: var(--accent);
 }
+/* source color swatch — sits in the same 16px column as the row icons */
+.source-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin: 0 3px;
+  border-radius: 50%;
+  box-shadow: 0 0 6px currentColor;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+.layer-row.active .source-dot {
+  opacity: 1;
+}
 .layer-label {
   font-family: var(--font-mono);
   font-size: 12px;

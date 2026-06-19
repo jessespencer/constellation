@@ -6,17 +6,22 @@ import {
   CSS2DObject,
 } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import { computeBloom3D } from "./bloom3d";
-import type { MapData, NodeDatum, ColorMode, ResolvedEdge } from "./types";
-import { SOURCE_COLORS } from "./types";
+import type { MapData, NodeDatum, ColorMode, ResolvedEdge, Source } from "./types";
+import { SOURCE_COLORS, DEFAULT_ZOOM } from "./types";
 import { heatColor } from "./heat";
 import type { Dims } from "./projection";
 
 const INK = new THREE.Color(0x82cdeb); // light cyan edge hairline (echoes the bridge accent, kept faint)
 const BRIDGE = new THREE.Color(0x5fdcff); // accent cyan for cross-cluster links
 const BASE3D = 3.4; // node base size; minimal glow keeps stars crisp
+const HIT_PAD = 10; // px slack around a dot's rendered radius for easier hovering
 
 // once-per-page-load guard for the camera fly-in (re-arms on a full reload)
 let threeIntroPlayed = false;
+
+const FIT_MS = 900; // duration of the "fit" re-frame tween
+const easeInOutCubic = (t: number) =>
+  t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
 interface Props {
   data: MapData;
@@ -32,6 +37,7 @@ interface Props {
   bridgesOnly: boolean;
   showLabels: boolean;
   showOrphans: boolean;
+  hiddenSources: Set<Source>;
   onHover: (node: NodeDatum | null, screen: [number, number]) => void;
   onSelect: (node: NodeDatum) => void;
 }
@@ -80,6 +86,8 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
     geom: THREE.BufferGeometry;
     edgesObj: THREE.LineSegments;
     bridgesObj: THREE.LineSegments;
+    edgeList: ResolvedEdge[];
+    bridgeList: ResolvedEdge[];
     labelObjs: CSS2DObject[];
     bloom: ReturnType<typeof computeBloom3D>;
     camera: THREE.PerspectiveCamera;
@@ -88,14 +96,39 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
     fitDist: number;
   } | null>(null);
 
-  // re-frame the camera to the initial bounding-sphere fit
+  // active "fit" tween, consumed by the render loop (null when idle)
+  const fitAnim = useRef<{
+    t0: number;
+    fromPos: THREE.Vector3;
+    fromTarget: THREE.Vector3;
+    toPos: THREE.Vector3;
+    toTarget: THREE.Vector3;
+    wasAutoRotate: boolean;
+  } | null>(null);
+
+  // re-frame the camera to the initial bounding-sphere fit, easing smoothly
+  // back out so a zoomed-in viewer isn't snapped across the scene
   useImperativeHandle(ref, () => ({
     fit: () => {
       const a = api.current;
       if (!a) return;
-      a.camera.position.set(a.cen.x, a.cen.y, a.cen.z + a.fitDist);
-      a.controls.target.copy(a.cen);
-      a.controls.update();
+      const toPos = new THREE.Vector3(a.cen.x, a.cen.y, a.cen.z + a.fitDist);
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      if (reduceMotion) {
+        a.camera.position.copy(toPos);
+        a.controls.target.copy(a.cen);
+        a.controls.update();
+        return;
+      }
+      fitAnim.current = {
+        t0: performance.now(),
+        fromPos: a.camera.position.clone(),
+        fromTarget: a.controls.target.clone(),
+        toPos,
+        toTarget: a.cen.clone(),
+        wasAutoRotate: a.controls.autoRotate,
+      };
+      a.controls.autoRotate = false; // hold the spin until we've settled
     },
   }), []);
 
@@ -129,10 +162,13 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
     bloom.labelPos.forEach(([x, y, z]) => grow(x, y, z));
     const FOV = 50;
     const fitDist = (radius / Math.sin((FOV / 2) * (Math.PI / 180))) * 1.04;
+    // resting distance: 15% tighter than exact fit, matching the 2D default.
+    // The Fit button still tweens back to the exact fitDist.
+    const restDist = fitDist / DEFAULT_ZOOM;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 2000);
-    camera.position.set(cen.x, cen.y, cen.z + fitDist);
+    camera.position.set(cen.x, cen.y, cen.z + restDist);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -195,8 +231,9 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
       });
       return new THREE.LineSegments(g, m);
     }
+    const bridgeEdges = edges.filter((e) => e.bridge);
     const edgesObj = buildLines(edges, INK, 0.1); // cool faint hairlines
-    const bridgesObj = buildLines(edges.filter((e) => e.bridge), BRIDGE, 0.55);
+    const bridgesObj = buildLines(bridgeEdges, BRIDGE, 0.55);
     bridgesObj.visible = false;
     scene.add(edgesObj);
     scene.add(bridgesObj);
@@ -218,21 +255,43 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
       labelObjs.push(obj);
     }
 
-    api.current = { points, geom, edgesObj, bridgesObj, labelObjs, bloom, camera, controls, cen, fitDist };
+    api.current = { points, geom, edgesObj, bridgesObj, edgeList: edges, bridgeList: bridgeEdges, labelObjs, bloom, camera, controls, cen, fitDist };
 
-    // ---- raycast hover / click ----
-    const raycaster = new THREE.Raycaster();
-    raycaster.params.Points!.threshold = 2.6;
-    const ndc = new THREE.Vector2();
+    // ---- screen-space hover / click ----
+    // Pick the node whose rendered disc actually sits under the cursor. A
+    // raycaster's world-space threshold breaks when zoomed in: a node close to
+    // the camera subtends a huge screen angle for a fixed world distance, so one
+    // dot grabs the whole viewport and the tooltip sticks everywhere. Matching
+    // the on-screen dot radius (gl_PointSize, in CSS px) keeps the hit area tied
+    // to what's drawn at any zoom.
+    const uK = 2 * fitDist; // mirrors the vertex shader's framing constant
+    const wv = new THREE.Vector3();
     let hovered = -1;
 
     function pick(ev: PointerEvent): number {
       const rect = renderer.domElement.getBoundingClientRect();
-      ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-      ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(ndc, camera);
-      const hits = raycaster.intersectObject(points);
-      return hits.length ? (hits[0].index ?? -1) : -1;
+      const w = rect.width, h = rect.height;
+      if (!w || !h) return -1;
+      const cx = ev.clientX - rect.left;
+      const cy = ev.clientY - rect.top;
+      const sizeAttr = geom.getAttribute("size") as THREE.BufferAttribute;
+      const alphaAttr = geom.getAttribute("aAlpha") as THREE.BufferAttribute;
+      let best = -1;
+      let bestD = Infinity;
+      for (let i = 0; i < n; i++) {
+        if (alphaAttr.getX(i) <= 0) continue; // hidden orphan — not drawn
+        wv.set(bloom.pos[3 * i], bloom.pos[3 * i + 1], bloom.pos[3 * i + 2]);
+        const depth = camera.position.distanceTo(wv);
+        wv.project(camera);
+        if (wv.z < -1 || wv.z > 1) continue; // behind camera / outside frustum
+        const sx = (wv.x * 0.5 + 0.5) * w;
+        const sy = (-wv.y * 0.5 + 0.5) * h;
+        const d = Math.hypot(sx - cx, sy - cy);
+        // rendered CSS radius: gl_PointSize/2 with the pixelRatio factored out
+        const r = 0.5 * sizeAttr.getX(i) * (uK / depth) + HIT_PAD;
+        if (d <= r && d < bestD) { bestD = d; best = i; }
+      }
+      return best;
     }
     function onMove(ev: PointerEvent) {
       const idx = pick(ev);
@@ -281,20 +340,39 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const playIntro = !threeIntroPlayed && !reduceMotion;
     if (playIntro) threeIntroPlayed = true;
+    // StrictMode (dev) mounts→unmounts→remounts: the first mount would "consume"
+    // the intro on a canvas it then throws away, leaving the surviving mount with
+    // nothing to play. Re-arm the flag if we unmount before the intro completes.
+    let introDone = !playIntro;
     const introT0 = performance.now();
-    const startDist = playIntro ? fitDist * 1.28 : fitDist;
+    const startDist = playIntro ? restDist * 1.28 : restDist;
     camera.position.set(cen.x, cen.y, cen.z + startDist);
 
     let raf = 0;
     const loop = () => {
       raf = requestAnimationFrame(loop);
+      // "fit" tween: ease both the orbit target and the camera back to the
+      // bounding-sphere framing. Set the target before controls.update() so the
+      // damping/orbit math uses it; override the position after.
+      const fa = fitAnim.current;
+      const fk = fa ? easeInOutCubic(Math.min(1, (performance.now() - fa.t0) / FIT_MS)) : 0;
+      if (fa) controls.target.lerpVectors(fa.fromTarget, fa.toTarget, fk);
       controls.update();
+      if (fa) {
+        camera.position.lerpVectors(fa.fromPos, fa.toPos, fk);
+        if (fk >= 1) {
+          controls.autoRotate = fa.wasAutoRotate;
+          fitAnim.current = null;
+        }
+      }
       const e = (performance.now() - introT0) / INTRO_MS;
       if (playIntro && e < 1) {
         const k = 1 - Math.pow(1 - e, 3); // easeOutCubic
-        const dist = startDist + (fitDist - startDist) * k;
+        const dist = startDist + (restDist - startDist) * k;
         const dir = camera.position.clone().sub(controls.target).normalize();
         camera.position.copy(controls.target).addScaledVector(dir, dist);
+      } else if (playIntro) {
+        introDone = true;
       }
       renderer.render(scene, camera);
       labelRenderer.render(scene, camera);
@@ -318,6 +396,7 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
       mount.removeChild(renderer.domElement);
       mount.removeChild(labelRenderer.domElement);
       api.current = null;
+      if (!introDone) threeIntroPlayed = false; // re-arm for the surviving remount
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.data]);
@@ -367,10 +446,12 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
       // Orphan = no edges cleared the similarity threshold (the pipeline still
       // assigns every node a theme cluster, so cluster === -1 is never set).
       const hiddenOrphan = !props.showOrphans && (props.degree[i] || 0) === 0;
-      attr.setX(i, hiddenOrphan ? 0 : match ? 0.92 : 0.06);
+      const hiddenSource = props.hiddenSources.has(nd.source);
+      // alpha 0 also drops the node from pick() (it skips alpha <= 0)
+      attr.setX(i, hiddenOrphan || hiddenSource ? 0 : match ? 0.92 : 0.06);
     });
     attr.needsUpdate = true;
-  }, [props.query, props.data, props.showOrphans, props.degree]);
+  }, [props.query, props.data, props.showOrphans, props.hiddenSources, props.degree]);
 
   // ---- edges / bridges toggle ------------------------------------------- //
   useEffect(() => {
@@ -379,6 +460,43 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
     a.edgesObj.visible = props.showEdges && !props.bridgesOnly;
     a.bridgesObj.visible = props.bridgesOnly;
   }, [props.showEdges, props.bridgesOnly]);
+
+  // ---- hide edges touching a hidden source ------------------------------ //
+  // Line geometry is built once, so rather than rebuild we rewrite endpoints in
+  // place: an edge with a hidden endpoint collapses to a zero-length (invisible)
+  // segment; otherwise it gets its real endpoints back from bloom.pos.
+  useEffect(() => {
+    const a = api.current;
+    if (!a) return;
+    const { nodes } = props.data;
+    const hidden = props.hiddenSources;
+    const rewrite = (obj: THREE.LineSegments, list: ResolvedEdge[]) => {
+      const arr = (obj.geometry.getAttribute("position") as THREE.BufferAttribute)
+        .array as Float32Array;
+      for (let i = 0; i < list.length; i++) {
+        const e = list[i];
+        const a3 = e.si * 3;
+        const b3 = e.ti * 3;
+        const off = i * 6;
+        if (hidden.has(nodes[e.si].source) || hidden.has(nodes[e.ti].source)) {
+          // both endpoints at the source node -> degenerate, draws nothing
+          arr[off] = arr[off + 3] = a.bloom.pos[a3];
+          arr[off + 1] = arr[off + 4] = a.bloom.pos[a3 + 1];
+          arr[off + 2] = arr[off + 5] = a.bloom.pos[a3 + 2];
+        } else {
+          arr[off] = a.bloom.pos[a3];
+          arr[off + 1] = a.bloom.pos[a3 + 1];
+          arr[off + 2] = a.bloom.pos[a3 + 2];
+          arr[off + 3] = a.bloom.pos[b3];
+          arr[off + 4] = a.bloom.pos[b3 + 1];
+          arr[off + 5] = a.bloom.pos[b3 + 2];
+        }
+      }
+      (obj.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+    };
+    rewrite(a.edgesObj, a.edgeList);
+    rewrite(a.bridgesObj, a.bridgeList);
+  }, [props.hiddenSources, props.data]);
 
   // ---- labels toggle ---------------------------------------------------- //
   useEffect(() => {

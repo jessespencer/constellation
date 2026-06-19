@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import type { NodeDatum } from "./types";
-import { SOURCE_COLORS } from "./types";
+import { SOURCE_COLORS, SOURCE_LABELS } from "./types";
 
 interface Props {
   node: NodeDatum;
@@ -23,7 +23,7 @@ export default function ReadoutCard({
       <div className="readout-title">{node.title || "Untitled"}</div>
       <div className="chips">
         <span className="chip" style={{ color: sourceColor }}>
-          {node.source === "claude" ? "Claude" : "ChatGPT"}
+          {SOURCE_LABELS[node.source]}
         </span>
         <span className="chip chip-theme" style={{ color: themeColor }}>
           {themeLabel}

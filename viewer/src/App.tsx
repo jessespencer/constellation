@@ -18,13 +18,79 @@ import type {
   Layout,
   SizeMode,
   ResolvedEdge,
+  Source,
 } from "./types";
-import { themeColor } from "./types";
+import {
+  themeColor,
+  DEFAULT_ZOOM,
+  CONSTELLATION_ZOOM,
+  BLOOM_AMOUNT,
+  BLOOM_MS,
+} from "./types";
 import { worldToScreen, type Dims } from "./projection";
 
 const CARD_W = 232;
 const CARD_H = 152;
 const LABEL_PX = 12; // uniform category-heading size across all layout tabs
+
+// Subtle bloom-in shared by both 2D layouts: ease each node into `settled` from
+// a few percent off (pulled toward the centroid, with a touch of swirl), framing
+// the settled extent up front so nothing reframes. Writes the live positions
+// into posRef and redraws each frame. Returns a cancel fn. Honors reduced-motion.
+function bloomInto(
+  canvasApi: React.RefObject<MapCanvasHandle>,
+  posRef: React.MutableRefObject<Float32Array>,
+  settled: Float32Array,
+  zoomFactor: number
+): () => void {
+  const n = settled.length / 2;
+  if (!n) return () => {};
+
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  if (reduceMotion) {
+    posRef.current = settled;
+    canvasApi.current?.redraw();
+    const id = requestAnimationFrame(() => canvasApi.current?.fit(zoomFactor, settled));
+    return () => cancelAnimationFrame(id);
+  }
+
+  let cx = 0, cy = 0;
+  for (let i = 0; i < n; i++) { cx += settled[2 * i]; cy += settled[2 * i + 1]; }
+  cx /= n; cy /= n;
+
+  // start = settled pulled a few % toward centre, with a tiny per-node swirl
+  const start = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    const dx = settled[2 * i] - cx;
+    const dy = settled[2 * i + 1] - cy;
+    const contract = BLOOM_AMOUNT * (0.5 + Math.random()); // ~half–1.5× the mean
+    const ang = (Math.random() - 0.5) * BLOOM_AMOUNT;       // subtle rotation (radians)
+    const cos = Math.cos(ang), sin = Math.sin(ang), s = 1 - contract;
+    start[2 * i] = cx + (dx * cos - dy * sin) * s;
+    start[2 * i + 1] = cy + (dx * sin + dy * cos) * s;
+  }
+
+  const cur = new Float32Array(start);
+  posRef.current = cur;
+
+  const ease = (t: number) => 1 - Math.pow(1 - t, 3); // easeOutCubic — soft landing
+  let raf = 0;
+  let t0 = 0;
+  let framed = false;
+  const tick = (ts: number) => {
+    if (!t0) t0 = ts;
+    if (!framed) { canvasApi.current?.fit(zoomFactor, settled); framed = true; }
+    const e = ease(Math.min(1, (ts - t0) / BLOOM_MS));
+    for (let i = 0; i < n; i++) {
+      cur[2 * i] = start[2 * i] + (settled[2 * i] - start[2 * i]) * e;
+      cur[2 * i + 1] = start[2 * i + 1] + (settled[2 * i + 1] - start[2 * i + 1]) * e;
+    }
+    canvasApi.current?.redraw();
+    if (e < 1) raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+  return () => cancelAnimationFrame(raf);
+}
 
 // plain-language descriptions for every control, grouped for the info panel
 const INFO_SECTIONS: { heading: string; items: { name: string; body: string }[] }[] = [
@@ -58,7 +124,7 @@ const INFO_SECTIONS: { heading: string; items: { name: string; body: string }[] 
       },
       {
         name: "Source",
-        body: "Color by origin — Claude in blue, ChatGPT in amber — to see how each tool fills the map.",
+        body: "Color by origin — Claude in blue, ChatGPT in amber, Claude Code in green — to see how each tool fills the map.",
       },
     ],
   },
@@ -97,7 +163,8 @@ export default function App() {
   const [showRegions, setShowRegions] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showOrphans, setShowOrphans] = useState(true);
-  const [settling, setSettling] = useState(false);
+  const [hiddenSources, setHiddenSources] = useState<Set<Source>>(new Set());
+  const [constReady, setConstReady] = useState(false);
   const [regionsVersion, setRegionsVersion] = useState(0);
   const [query, setQuery] = useState("");
   const [hover, setHover] = useState<{ node: NodeDatum; pos: [number, number] } | null>(null);
@@ -109,8 +176,9 @@ export default function App() {
   const topbarRef = useRef<HTMLDivElement>(null);
   const canvasApi = useRef<MapCanvasHandle>(null);
   const threeApi = useRef<ThreeViewHandle>(null);
-  const workerRef = useRef<Worker | null>(null);
   const constPosRef = useRef<Float32Array>(new Float32Array(0));
+  const constLayoutRef = useRef<Float32Array>(new Float32Array(0)); // settled layout, cached
+  const mapPosRef = useRef<Float32Array>(new Float32Array(0)); // live map draw buffer (bloom)
   const [topbarH, setTopbarH] = useState(0);
 
   // frame every node in the current view (resets pan/zoom in 2D, camera in 3D)
@@ -129,9 +197,32 @@ export default function App() {
           `[atlas] ${m.nodes.length} nodes · ${es.length} edges · ${bridges.length} bridges`
         );
         setData(m);
+        setHiddenSources(new Set()); // never carry a stale source filter into new data
       })
       .catch(() => setError("Could not load map.json — run `make map` in /pipeline first."));
   }, []);
+
+  // sources actually present in the data, in a fixed display order
+  const presentSources = useMemo<Source[]>(() => {
+    if (!data) return [];
+    return (["claude", "chatgpt", "claude-code"] as Source[]).filter(
+      (s) => (data.meta.sources[s] ?? 0) > 0
+    );
+  }, [data]);
+
+  const toggleSource = (s: Source) =>
+    setHiddenSources((prev) => {
+      const next = new Set(prev);
+      if (next.has(s)) next.delete(s);
+      else next.add(s);
+      return next;
+    });
+
+  // hiding a source deselects a node of that source so the drawer/ring don't
+  // point at empty space (covers all three views — they key off `selected`)
+  useEffect(() => {
+    if (selected && hiddenSources.has(selected.source)) setSelected(null);
+  }, [hiddenSources, selected]);
 
   // --- derived, built once per data load ---------------------------------- //
   const idIndex = useMemo(() => {
@@ -242,6 +333,10 @@ export default function App() {
   }, [data, degree]);
 
   useEffect(() => {
+    // keep both 2D buffers at the static map positions when idle: mapPosRef is
+    // what the map draws (except mid-bloom), constPosRef is the constellation's
+    // fallback until its settled layout is ready.
+    mapPosRef.current = mapPos;
     constPosRef.current = mapPos.slice();
   }, [mapPos]);
 
@@ -257,42 +352,46 @@ export default function App() {
     };
   }, []);
 
-  // --- force-layout worker ------------------------------------------------ //
+  // --- settled constellation layout (computed once, in the background) ----- //
+  // The constellation is a relaxed force layout. We settle it off the main
+  // thread as soon as the data (and its radial seeds/targets) are ready and
+  // cache the result, so entering the view shows it instantly — like the static
+  // map — with labels fading in, instead of animating the nodes open.
   useEffect(() => {
-    if (!data) return;
+    if (!data || !bloom) return;
     const w = new Worker(new URL("./forceWorker.ts", import.meta.url), {
       type: "module",
     });
     w.onmessage = (ev: MessageEvent) => {
-      const { type, positions } = ev.data as {
-        type: string;
-        positions: Float32Array;
-      };
-      constPosRef.current = positions;
-      canvasApi.current?.redraw();
-      if (type === "end") {
-        setSettling(false);
-        setRegionsVersion((v) => v + 1);
-      }
+      const { positions } = ev.data as { positions: Float32Array };
+      constLayoutRef.current = positions;
+      setConstReady(true); // the entry effect picks it up (here or on entry)
+      w.terminate();
     };
-    workerRef.current = w;
-    return () => w.terminate();
-  }, [data]);
-
-  useEffect(() => {
-    if (!data || !bloom || layout !== "constellation" || !workerRef.current) return;
-    constPosRef.current = bloom.seeds.slice();
-    canvasApi.current?.redraw();
     const nodes = data.nodes.map((_, i) => ({
       x: bloom.seeds[2 * i],
       y: bloom.seeds[2 * i + 1],
       cx: bloom.targets[2 * i],
       cy: bloom.targets[2 * i + 1],
     }));
-    setSettling(true);
-    workerRef.current.postMessage({ nodes });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, data]);
+    w.postMessage({ nodes });
+    return () => w.terminate();
+  }, [data, bloom]);
+
+  // Entering the constellation: subtle bloom into its cached settled layout.
+  // (Fires on entry, or the moment the background settle finishes.)
+  useEffect(() => {
+    if (layout !== "constellation" || !constReady) return;
+    setRegionsVersion((v) => v + 1);
+    return bloomInto(canvasApi, constPosRef, constLayoutRef.current, CONSTELLATION_ZOOM);
+  }, [layout, constReady]);
+
+  // Entering the map: the same subtle bloom into its static semantic positions.
+  // (3D frames itself via its own controls.)
+  useEffect(() => {
+    if (!data || layout !== "map") return;
+    return bloomInto(canvasApi, mapPosRef, mapPos, DEFAULT_ZOOM);
+  }, [layout, data, mapPos]);
 
   useEffect(() => {
     const el = stageRef.current;
@@ -525,6 +624,7 @@ export default function App() {
               bridgesOnly={bridgesOnly}
               showLabels={showLabels}
               showOrphans={showOrphans}
+              hiddenSources={hiddenSources}
               onHover={(node, pos) => setHover(node ? { node, pos } : null)}
               onSelect={setSelected}
             />
@@ -536,8 +636,8 @@ export default function App() {
             data={data}
             dims={dims}
             layout={layout}
-            settling={settling}
-            mapPos={mapPos}
+            settling={false}
+            mapPosRef={mapPosRef}
             constPosRef={constPosRef}
             nodeScale={nodeScale}
             heat={heat}
@@ -550,6 +650,7 @@ export default function App() {
             bridgesOnly={bridgesOnly}
             showRegions={showRegions}
             showOrphans={showOrphans}
+            hiddenSources={hiddenSources}
             regionsVersion={regionsVersion}
             selectedId={selected?.id ?? null}
             selectedIndex={selIndex}
@@ -624,7 +725,6 @@ export default function App() {
           </div>
         ))}
 
-        {settling && <div className="settling-note">blooming…</div>}
 
         {/* selected readout card — anchored, with leader + ring */}
         {selected && selPlace && (
@@ -667,6 +767,9 @@ export default function App() {
           setShowLabels={setShowLabels}
           showOrphans={showOrphans}
           setShowOrphans={setShowOrphans}
+          presentSources={presentSources}
+          hiddenSources={hiddenSources}
+          toggleSource={toggleSource}
           colorMode={colorMode}
           setColorMode={setColorMode}
           sizeMode={sizeMode}

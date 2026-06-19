@@ -8,9 +8,11 @@ export interface ClusterMeta {
   cy: number;
 }
 
+export type Source = "claude" | "chatgpt" | "claude-code";
+
 export interface NodeDatum {
   id: string;
-  source: "claude" | "chatgpt";
+  source: Source;
   title: string;
   created_at: string;
   msg_count: number;
@@ -34,7 +36,7 @@ export interface MapData {
     generated_at: string;
     model: string;
     n: number;
-    sources: { claude: number; chatgpt: number };
+    sources: Partial<Record<Source, number>>;
     n_clusters: number;
   };
   clusters: ClusterMeta[];
@@ -43,6 +45,22 @@ export interface MapData {
 }
 
 export type Layout = "map" | "constellation" | "3d";
+
+// Default framing on layout entry / first load: an exact fit-to-screen, the
+// same as the manual "Fit" button. Map and 3D both use this.
+export const DEFAULT_ZOOM = 1.0;
+
+// The constellation packs denser (a radial bloom) and frames its settled force
+// layout rather than the static map, so an exact fit reads too tight there.
+// It gets its own, looser factor — zoomed well out for breathing room.
+export const CONSTELLATION_ZOOM = 1.0;
+
+// Subtle bloom-in on entry (shared by both 2D layouts, map + constellation):
+// each node eases to its settled spot from a few percent off (toward centre),
+// so there's a whisper of movement without a big spread. Bump BLOOM_AMOUNT for
+// more travel, BLOOM_MS for a slower settle.
+export const BLOOM_AMOUNT = 0.06; // mean start offset, fraction of radius from centre
+export const BLOOM_MS = 1300; // ease-out duration
 
 // Edge with endpoints resolved to node indices (built once for fast drawing).
 export interface ResolvedEdge {
@@ -54,7 +72,7 @@ export interface ResolvedEdge {
 
 export interface Transcript {
   id: string;
-  source: "claude" | "chatgpt";
+  source: Source;
   title: string;
   created_at: string;
   messages: { role: "user" | "assistant"; text: string }[];
@@ -62,10 +80,18 @@ export interface Transcript {
 
 export type ColorMode = "density" | "cluster" | "source";
 
-// Source chips/dots: Claude reads cool blue, ChatGPT teal (night-sky palette).
-export const SOURCE_COLORS: Record<NodeDatum["source"], string> = {
+// Source chips/dots (night-sky palette): Claude periwinkle, ChatGPT amber,
+// Claude Code a luminous green — the terminal hue, distinct from both.
+export const SOURCE_COLORS: Record<Source, string> = {
   claude: "#6ea8ff", // bright periwinkle blue
   chatgpt: "#f5a35a", // warm amber — complementary to Claude's blue
+  "claude-code": "#54e0a3", // luminous green — the terminal hue
+};
+
+export const SOURCE_LABELS: Record<Source, string> = {
+  claude: "Claude",
+  chatgpt: "ChatGPT",
+  "claude-code": "Claude Code",
 };
 
 // Luminous theme palette — 14 hues spread evenly around the full color wheel at

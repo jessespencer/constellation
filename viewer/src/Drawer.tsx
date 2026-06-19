@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Transcript, NodeDatum } from "./types";
-import { SOURCE_COLORS } from "./types";
+import { SOURCE_COLORS, SOURCE_LABELS } from "./types";
 
 interface Props {
   node: NodeDatum | null;
@@ -42,7 +42,7 @@ export default function Drawer({ node, onClose }: Props) {
             className="chip"
             style={{ color: SOURCE_COLORS[node.source] }}
           >
-            {node.source === "claude" ? "Claude" : "ChatGPT"}
+            {SOURCE_LABELS[node.source]}
           </span>
           <span className="drawer-date">
             {node.created_at ? node.created_at.slice(0, 10) : ""}

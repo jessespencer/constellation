@@ -13,6 +13,7 @@ import type {
   ColorMode,
   Layout,
   ResolvedEdge,
+  Source,
 } from "./types";
 import { SOURCE_COLORS, themeColor } from "./types";
 import { heatColor, heatBucket } from "./heat";
@@ -26,9 +27,14 @@ const REGION_PAD = 5; // world units to expand cluster hulls
 const EDGE_RGB = "130,205,235"; // light cyan hairline (echoes the bridge accent, kept faint)
 const ACCENT_RGB = "95,220,255"; // bridge / active
 
+// zoom floor — low enough that a zoomed-well-out framing (e.g. the loose
+// constellation default) isn't clamped, and users can pull back to take in the
+// whole structure.
+const MIN_SCALE = 0.1;
+
 export interface MapCanvasHandle {
   redraw: () => void;
-  fit: () => void;
+  fit: (zoomFactor?: number, posOverride?: Float32Array) => void;
 }
 
 interface Props {
@@ -36,7 +42,7 @@ interface Props {
   dims: Dims;
   layout: Layout;
   settling: boolean;
-  mapPos: Float32Array;
+  mapPosRef: React.MutableRefObject<Float32Array>;
   constPosRef: React.MutableRefObject<Float32Array>;
   nodeScale: Float32Array; // per-node size multiplier (size-by metric)
   heat: Float32Array; // per-node density intensity 0..1 (heat color mode)
@@ -49,6 +55,7 @@ interface Props {
   bridgesOnly: boolean;
   showRegions: boolean;
   showOrphans: boolean;
+  hiddenSources: Set<Source>;
   regionsVersion: number;
   selectedId: string | null;
   selectedIndex: number; // -1 when nothing selected
@@ -88,11 +95,12 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
   const p = useRef(props);
   p.current = props;
 
-  // Map snaps straight to its true semantic positions; only Constellation
-  // animates (its bloom is driven by the force worker via constPosRef).
+  // Both 2D layouts draw from a live position buffer so each can bloom in on
+  // entry: constPosRef for the constellation, mapPosRef for the map (which sits
+  // at the static semantic positions except during its bloom).
   function positions(): Float32Array {
-    const { layout, constPosRef, mapPos } = p.current;
-    return layout === "constellation" ? constPosRef.current : mapPos;
+    const { layout, constPosRef, mapPosRef } = p.current;
+    return layout === "constellation" ? constPosRef.current : mapPosRef.current;
   }
 
   // one soft radial glow sprite per color, lazily built and cached
@@ -215,6 +223,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       bridgesOnly,
       showRegions,
       showOrphans,
+      hiddenSources,
       settling,
       selectedIndex,
     } = p.current;
@@ -301,6 +310,12 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     if (showEdges || focused) {
       for (let ei = 0; ei < edges.length; ei++) {
         const e = edges[ei];
+        // an edge touching a hidden source is never drawn (nor added to `strong`)
+        if (
+          hiddenSources.has(data.nodes[e.si].source) ||
+          hiddenSources.has(data.nodes[e.ti].source)
+        )
+          continue;
         const isStrong = hi >= 0 ? e.si === hi || e.ti === hi : bridgesOnly && e.bridge;
         if (isStrong) {
           strong.push(ei);
@@ -341,6 +356,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     for (let i = 0; i < n; i++) {
       const node = data.nodes[i];
       if (!showOrphans && adjacency[i].length === 0) continue;
+      if (hiddenSources.has(node.source)) continue;
       const match = !q || node.title.toLowerCase().includes(q);
       const ti = isHeat ? heat[i] || 0 : 0;
       let a = isHeat ? 0.14 + ti * 0.5 : 0.5;
@@ -360,6 +376,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     for (let i = 0; i < n; i++) {
       const node = data.nodes[i];
       if (!showOrphans && adjacency[i].length === 0) continue;
+      if (hiddenSources.has(node.source)) continue;
       const match = !q || node.title.toLowerCase().includes(q);
       const ti = isHeat ? heat[i] || 0 : 0;
       let a = isHeat ? 0.6 + ti * 0.4 : 0.95;
@@ -396,17 +413,22 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
   }
 
   // Reset pan/zoom so every (visible) node is framed in the viewport.
-  function fit() {
+  // zoomFactor > 1 tightens past the exact fit (the default layout entry uses
+  // DEFAULT_ZOOM; the Fit button passes 1 for an exact frame). posOverride lets
+  // a caller frame a position set other than what's drawn — e.g. the
+  // constellation's settled extent before the bloom has animated there.
+  function fit(zoomFactor = 1, posOverride?: Float32Array) {
     const canvas = canvasRef.current;
     const zoomBehavior = zoomRef.current;
     if (!canvas || !zoomBehavior) return;
-    const { data, dims, showOrphans, adjacency } = p.current;
+    const { data, dims, showOrphans, hiddenSources, adjacency } = p.current;
     if (!dims.width || !dims.height) return;
-    const pos = positions();
+    const pos = posOverride ?? positions();
     const s = baseScale(dims);
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (let i = 0; i < data.nodes.length; i++) {
       if (!showOrphans && adjacency[i].length === 0) continue;
+      if (hiddenSources.has(data.nodes[i].source)) continue;
       const bx = dims.width / 2 + pos[2 * i] * s;
       const by = dims.height / 2 - pos[2 * i + 1] * s;
       if (bx < minX) minX = bx;
@@ -418,10 +440,8 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     const pad = 0.12; // leave a margin around the framed structure
     const bw = maxX - minX || 1;
     const bh = maxY - minY || 1;
-    const k = Math.max(
-      0.4,
-      Math.min(40, dims.width * (1 - pad) / bw, dims.height * (1 - pad) / bh)
-    );
+    const kFit = Math.min(40, dims.width * (1 - pad) / bw, dims.height * (1 - pad) / bh);
+    const k = Math.max(MIN_SCALE, Math.min(40, kFit * zoomFactor));
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     const t = zoomIdentity
@@ -463,6 +483,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     props.bridgesOnly,
     props.showRegions,
     props.showOrphans,
+    props.hiddenSources,
     props.regionsVersion,
     props.dims,
   ]);
@@ -473,7 +494,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
     if (!canvas) return;
     const sel = select(canvas);
     const zoomBehavior = zoom<HTMLCanvasElement, unknown>()
-      .scaleExtent([0.4, 40])
+      .scaleExtent([MIN_SCALE, 40])
       .on("zoom", (event) => {
         transformRef.current = event.transform;
         p.current.onTransform(event.transform);
@@ -501,6 +522,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       let bestD = hitR;
       const consider = (i: number) => {
         if (!p.current.showOrphans && p.current.adjacency[i].length === 0) return;
+        if (p.current.hiddenSources.has(p.current.data.nodes[i].source)) return;
         const [sx, sy] = worldToScreen(pos[2 * i], pos[2 * i + 1], p.current.dims, t);
         const d = (sx - mx) ** 2 + (sy - my) ** 2;
         if (d < bestD) {

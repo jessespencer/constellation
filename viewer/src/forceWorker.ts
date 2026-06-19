@@ -1,16 +1,16 @@
 /// <reference lib="webworker" />
-// Relaxes the radial bloom off the main thread. Each node starts near its
-// precomputed radial target (cx,cy) and is pulled the rest of the way in while
-// collision spreads overlaps — so the layout "blooms open" over ~4s, then
-// freezes. No link force: structure comes from the targets, edges are only
-// drawn, so the tufts stay splayed instead of clumping.
+// Relaxes the radial constellation layout off the main thread. Each node starts
+// near its precomputed radial target (cx,cy) and is pulled the rest of the way
+// in while collision spreads overlaps. No link force: structure comes from the
+// targets, edges are only drawn, so the tufts stay splayed instead of clumping.
+// Runs once to its settled equilibrium and returns it — the viewer shows it
+// statically, no animation.
 import {
   forceSimulation,
   forceManyBody,
   forceCollide,
   forceX,
   forceY,
-  type Simulation,
 } from "d3-force";
 
 interface SimNode {
@@ -20,54 +20,36 @@ interface SimNode {
   cy: number;
 }
 
-let sim: Simulation<SimNode, undefined> | null = null;
-let timer: ReturnType<typeof setTimeout> | null = null;
+const snapshotOf = (ns: SimNode[]): Float32Array => {
+  const arr = new Float32Array(ns.length * 2);
+  for (let i = 0; i < ns.length; i++) {
+    arr[2 * i] = ns[i].x;
+    arr[2 * i + 1] = ns[i].y;
+  }
+  return arr;
+};
 
+// Relax the radial layout to its settled equilibrium and return it once. The
+// viewer caches this and shows it statically (no animation) — the constellation
+// just appears, like the static map, with labels fading in.
 self.onmessage = (ev: MessageEvent) => {
   const { nodes } = ev.data as { nodes: SimNode[] };
-  if (timer) clearTimeout(timer);
-  if (sim) sim.stop();
 
-  const n = nodes.length;
-
-  sim = forceSimulation<SimNode>(nodes)
-    // gentler pull toward the radial targets so the tufts drift open slowly
+  const sim = forceSimulation<SimNode>(nodes)
+    // gentle pull toward the radial targets; collision spreads overlaps
     .force("x", forceX<SimNode>((d) => d.cx).strength(0.07))
     .force("y", forceY<SimNode>((d) => d.cy).strength(0.07))
     .force("charge", forceManyBody<SimNode>().strength(-1.5).distanceMax(28))
     .force("collide", forceCollide<SimNode>(1.3))
     .alpha(1)
     .alphaMin(0.02)
-    // cooldown pace — nodes start near their targets, so a quicker settle (~4s)
     .alphaDecay(0.015)
     .stop();
 
-  const snapshot = (): Float32Array => {
-    const arr = new Float32Array(n * 2);
-    for (let i = 0; i < n; i++) {
-      arr[2 * i] = nodes[i].x;
-      arr[2 * i + 1] = nodes[i].y;
-    }
-    return arr;
-  };
+  while (sim.alpha() > sim.alphaMin()) sim.tick();
 
-  const step = () => {
-    if (!sim) return;
-    sim.tick();
-    const arr = snapshot();
-    (self as DedicatedWorkerGlobalScope).postMessage(
-      { type: "tick", positions: arr },
-      [arr.buffer]
-    );
-    if (sim.alpha() > sim.alphaMin()) {
-      timer = setTimeout(step, 16);
-    } else {
-      const fin = snapshot();
-      (self as DedicatedWorkerGlobalScope).postMessage(
-        { type: "end", positions: fin },
-        [fin.buffer]
-      );
-    }
-  };
-  step();
+  const pos = snapshotOf(nodes);
+  (self as DedicatedWorkerGlobalScope).postMessage({ positions: pos }, [
+    pos.buffer,
+  ]);
 };

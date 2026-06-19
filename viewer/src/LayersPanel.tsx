@@ -1,5 +1,6 @@
-import { LayerRow, Segmented } from "./ui";
-import type { ColorMode, SizeMode } from "./types";
+import { LayerRow, Segmented, SourceRow } from "./ui";
+import type { ColorMode, SizeMode, Source } from "./types";
+import { SOURCE_COLORS, SOURCE_LABELS } from "./types";
 
 interface Props {
   showEdges: boolean;
@@ -12,6 +13,9 @@ interface Props {
   setShowLabels: (v: boolean) => void;
   showOrphans: boolean;
   setShowOrphans: (v: boolean) => void;
+  presentSources: Source[];
+  hiddenSources: Set<Source>;
+  toggleSource: (s: Source) => void;
   colorMode: ColorMode;
   setColorMode: (v: ColorMode) => void;
   sizeMode: SizeMode;
@@ -53,6 +57,22 @@ export default function LayersPanel(props: Props) {
         on={props.showOrphans}
         onToggle={() => props.setShowOrphans(!props.showOrphans)}
       />
+
+      {props.presentSources.length > 0 && (
+        <>
+          <div className="layers-divider" />
+          <div className="layers-sub">Sources</div>
+          {props.presentSources.map((s) => (
+            <SourceRow
+              key={s}
+              color={SOURCE_COLORS[s]}
+              label={SOURCE_LABELS[s]}
+              on={!props.hiddenSources.has(s)}
+              onToggle={() => props.toggleSource(s)}
+            />
+          ))}
+        </>
+      )}
 
       <div className="layers-divider" />
 

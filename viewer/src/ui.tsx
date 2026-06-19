@@ -124,6 +124,33 @@ export function LayerRow({
   );
 }
 
+// Like LayerRow, but with a per-source color swatch instead of a fixed icon.
+// `on` means the source is visible.
+export function SourceRow({
+  color,
+  label,
+  on,
+  onToggle,
+}: {
+  color: string;
+  label: string;
+  on: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      className={`layer-row${on ? " active" : ""}`}
+      onClick={onToggle}
+      role="switch"
+      aria-checked={on}
+    >
+      <span className="source-dot" style={{ background: color, color }} />
+      <span className="layer-label">{label}</span>
+      <span className={`switch${on ? " on" : ""}`} />
+    </div>
+  );
+}
+
 export function Segmented<T extends string>({
   value,
   options,
