@@ -22,7 +22,7 @@ export default function Drawer({ node, onClose }: Props) {
     }
     setLoading(true);
     setTranscript(null);
-    fetch(`/conversations/${encodeURIComponent(id)}.json`)
+    fetch(`${import.meta.env.BASE_URL}conversations/${encodeURIComponent(id)}.json`)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((t: Transcript) => {
         cache.set(id, t);

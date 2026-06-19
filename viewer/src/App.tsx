@@ -120,7 +120,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    fetch("/map.json")
+    fetch(`${import.meta.env.BASE_URL}map.json`)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((m: MapData) => {
         const es = m.edges ?? [];
