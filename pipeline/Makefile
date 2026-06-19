@@ -16,6 +16,7 @@ INPUT   ?= ..
 OUT     ?= ../viewer/public
 
 SAMPLE  ?= ../sample
+N       ?= 950
 
 .PHONY: map venv install clean categories sample demo
 
@@ -45,8 +46,9 @@ install: venv
 	$(PIP) install -q -r requirements.txt
 
 # Generate a synthetic Claude + ChatGPT export (no personal data needed).
+# Override the conversation count with `make sample N=400`.
 sample: install
-	$(PY) sample_data.py $(SAMPLE)
+	$(PY) sample_data.py $(SAMPLE) $(N)
 
 # One-shot demo: synthesize sample exports, then build the map from them.
 # `make demo` then `cd ../viewer && npm install && npm run dev`.

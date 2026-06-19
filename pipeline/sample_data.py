@@ -1,5 +1,5 @@
-"""Generate a small synthetic Claude + ChatGPT export so the pipeline runs
-out of the box — no personal data required.
+"""Generate a synthetic Claude + ChatGPT export so the pipeline runs out of the
+box — no personal data required.
 
 Writes two files into a sample directory (default ``../sample``):
 
@@ -7,12 +7,17 @@ Writes two files into a sample directory (default ``../sample``):
     conversations-chatgpt.json   # ChatGPT export shape (``mapping`` node-tree)
 
 Both match the real export schemas closely enough that ``normalize.py`` parses
-them identically to a genuine export. The text is invented but themed across
-the curated categories in ``taxonomy.py`` so the resulting map shows distinct,
-colorful clusters.
+them identically to a genuine export.
 
-    python sample_data.py            # -> ../sample
-    python sample_data.py /tmp/demo  # -> /tmp/demo
+The text is invented but built by filling templated question frames with varied
+domain nouns, so each conversation embeds to a *distinct* point that still
+clusters with its theme — producing a fuzzy, realistically dense map rather than
+a handful of stacked dots. Topics are weighted unevenly (like real usage) and
+message counts follow a long tail (most chats short, a few very long).
+
+    python sample_data.py                 # -> ../sample, default count
+    python sample_data.py ../sample 950   # -> ../sample, ~950 conversations
+    python sample_data.py /tmp/demo       # -> /tmp/demo
 
 Then build the map from it:
 
@@ -27,186 +32,452 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
-# Each topic: a pool of user openers and assistant snippets. We mix and match to
-# create natural variation so embeddings spread the conversations realistically.
-TOPICS: dict[str, dict[str, list[str]]] = {
-    "design": {
-        "user": [
-            "How should I structure the visual hierarchy for a SaaS dashboard landing page?",
-            "What font pairing works for a modern fintech brand?",
-            "Critique my color palette: deep navy, warm coral, off-white. Too safe?",
-            "I'm designing a logo for a coffee roaster. How do I make it feel hand-crafted?",
-            "Walk me through building a design system token scale for spacing and type.",
+# Roughly 2/3 the scale of a heavy real account (~1.4k conversations).
+DEFAULT_N = 950
+
+# Each topic aligns with a category in taxonomy.py so categorize.py lands every
+# conversation in its intended theme. `frames` are templated over `nouns` to
+# produce wide intra-topic variety; `replies` populate the transcript view only
+# (assistant turns don't affect embedding). `weight` skews the topic mix toward
+# what a technical user actually asks about.
+TOPICS: dict[str, dict] = {
+    "Design & Branding": {
+        "weight": 1.3,
+        "nouns": [
+            "a SaaS dashboard", "a mobile onboarding flow", "a pricing page",
+            "a fintech logo", "a design token scale", "a dark-mode palette",
+            "an empty-state screen", "a navigation sidebar", "a settings page",
+            "a marketing landing page", "a component library", "an icon set",
+            "a checkout form", "a data table", "a notification system",
+            "a brand style guide",
         ],
-        "assistant": [
-            "Start with a clear focal point, then use size, weight, and whitespace to step the eye down through secondary and tertiary actions.",
-            "Pair a geometric sans for headings with a humanist sans for body to balance trust and warmth; keep to two weights each.",
-            "The palette is grounded but coral as the only accent risks monotony — add a desaturated tint for surfaces and reserve coral strictly for CTAs.",
-            "Lean into an imperfect, slightly rough mark and a warm earthy palette; a custom ligature in the wordmark reads as artisanal.",
+        "frames": [
+            "How should I structure the visual hierarchy for {x}?",
+            "Critique my layout approach for {x}.",
+            "What spacing and type scale works for {x}?",
+            "I'm redesigning {x} — where do I start?",
+            "How do I make {x} feel more polished without a full rebrand?",
+            "What's a clean way to handle responsive breakpoints on {x}?",
+            "Suggest a color palette and accent strategy for {x}.",
+            "How do I improve accessibility on {x}?",
         ],
-    },
-    "music": {
-        "user": [
-            "Help me write a chorus for an indie folk song about leaving a hometown.",
-            "What's a good chord progression for a melancholy lo-fi beat in A minor?",
-            "How do I mix vocals so they sit on top without sounding harsh?",
-            "Give me a Suno prompt for a dreamy synthwave track with a driving bassline.",
-            "I recorded guitar in Logic Pro but it sounds thin. How do I fatten it up?",
-        ],
-        "assistant": [
-            "Keep the chorus melodically higher than the verse and repeat one image — the road, the porch light — so it lands emotionally.",
-            "Try Am - F - C - G with a borrowed Dm7 for color; sit the tempo around 70 bpm and swing the hats slightly.",
-            "Carve 300 Hz mud, add a gentle de-esser at 6-8 kHz, and use parallel compression to keep the vocal present but smooth.",
-            "Double-track the part, pan the takes hard left/right, and add a subtle short room reverb to glue them into one wide sound.",
-        ],
-    },
-    "faith": {
-        "user": [
-            "What does the parable of the prodigal son teach about grace?",
-            "Can you explain the historical context of Psalm 23?",
-            "How do early church writers interpret the resurrection accounts?",
-            "I'm preparing a sermon on forgiveness — what scriptures should anchor it?",
-            "What's the difference between justification and sanctification in Christian theology?",
-        ],
-        "assistant": [
-            "The father's running embrace before any apology pictures grace as unearned — restoration precedes the son's rehearsed confession.",
-            "Written as a shepherd's psalm, it casts God as both guide and host; the rod and staff are tools of protection, not punishment.",
-            "The earliest accounts emphasize the empty tomb and eyewitness testimony, with the church fathers reading them as bodily, not merely spiritual.",
-            "Anchor it in Matthew 18, Colossians 3:13, and the Lord's Prayer — forgiveness flows from having first been forgiven.",
+        "replies": [
+            "Establish one clear focal point on {x}, then use size, weight, and whitespace to step the eye through secondary actions.",
+            "For {x}, lock a 4- or 8-pt spacing grid and a modular type scale so everything feels intentional.",
+            "Reserve your accent color on {x} strictly for primary actions; everything else stays neutral.",
+            "On {x}, check contrast ratios, focus states, and hit targets before worrying about polish.",
         ],
     },
-    "health": {
-        "user": [
-            "What are evidence-based ways to improve deep sleep?",
-            "I've been getting tension headaches at my desk. What might help?",
-            "Which vitamins actually matter if I eat a balanced diet?",
-            "How much protein do I really need to maintain muscle while cutting?",
-            "What's a sensible beginner strength routine I can do three times a week?",
+    "Art & Illustration": {
+        "weight": 0.8,
+        "nouns": [
+            "an album cover", "a children's book spread", "a character portrait",
+            "a watercolor landscape", "a poster design", "a logo mascot",
+            "a fantasy map", "a comic panel", "a product hero image",
+            "a tattoo concept", "a sticker pack", "a concept-art scene",
+            "a pixel-art sprite", "a linocut print", "a gradient illustration",
+            "a moodboard",
         ],
-        "assistant": [
-            "Keep a consistent wake time, get morning light, avoid caffeine after noon, and cool the room — these move deep sleep more than supplements.",
-            "Check monitor height and chair support, take a micro-break every 30 minutes, and stretch the upper traps and neck flexors.",
-            "For most balanced eaters, vitamin D and omega-3 are the common gaps; everything else is usually covered by food.",
-            "Around 1.6-2.2 g/kg of body weight preserves lean mass in a deficit; spread it across three or four meals.",
+        "frames": [
+            "Help me write an image prompt for {x}.",
+            "How do I improve the composition of {x}?",
+            "What color story works for {x}?",
+            "Give me three style directions for {x}.",
+            "How do I keep a consistent character across {x} and {y}?",
+            "What's a good lighting setup for {x}?",
+            "Critique the focal point in {x}.",
+            "How do I make {x} feel less flat?",
         ],
-    },
-    "cooking": {
-        "user": [
-            "My sourdough comes out dense. What am I doing wrong?",
-            "How do I get a restaurant-quality sear on a ribeye at home?",
-            "Give me a weeknight dinner using chickpeas, spinach, and whatever's in the pantry.",
-            "What's the trick to a silky, not-scrambled, carbonara?",
-            "How do I brew a less bitter cup of coffee with a French press?",
-        ],
-        "assistant": [
-            "Dense crumb usually means under-proofing or weak gluten — extend the bulk ferment and do a few sets of stretch-and-folds.",
-            "Dry the steak, salt ahead, use a screaming-hot cast iron, and don't move it until a crust forms; finish with butter and thyme.",
-            "Sauté garlic, add chickpeas and spinach with cumin and lemon, simmer with a splash of stock, and serve over rice or toast.",
-            "Temper the egg-and-cheese mixture off the heat with hot pasta water so it emulsifies into a sauce instead of curdling.",
+        "replies": [
+            "For {x}, lead the prompt with subject, then style, then lighting and mood, and keep modifiers concrete.",
+            "Use the rule of thirds on {x} and let negative space carry the eye to the subject.",
+            "Pick a limited palette for {x} — two dominants and one accent — so it reads cohesively.",
+            "Add a clear key light and a cooler fill on {x} to give the form depth.",
         ],
     },
-    "finance": {
-        "user": [
-            "Should I prioritize my Roth IRA or paying down a 6% car loan?",
-            "Explain how index fund expense ratios eat into long-term returns.",
-            "Is dollar-cost averaging actually better than lump-sum investing?",
-            "How do I think about an emergency fund versus investing extra cash?",
-            "What are the tax implications of selling stock I've held for eight months?",
+    "Music & Audio": {
+        "weight": 1.0,
+        "nouns": [
+            "an indie folk chorus", "a lo-fi beat in A minor", "a synthwave track",
+            "a worship ballad", "a vocal mix", "a guitar tone", "a drum pattern",
+            "a Suno prompt", "a bassline", "a song bridge", "a podcast intro",
+            "a Logic Pro session", "a melody hook", "an ambient pad",
+            "a mastering chain", "a string arrangement",
         ],
-        "assistant": [
-            "Capture any employer match first, then it's close — a guaranteed 6% by paying the loan often beats uncertain market returns.",
-            "A 1% fee can quietly cost tens of thousands over decades; favor broad-market funds with expense ratios under 0.1%.",
-            "Lump-sum wins on average since markets trend up, but DCA reduces regret risk and smooths the entry if you're anxious.",
-            "Hold three to six months of expenses liquid first; beyond that, extra cash generally compounds better invested.",
+        "frames": [
+            "Help me write {x}.",
+            "What chord progression fits {x}?",
+            "How do I mix {x} so it sits well?",
+            "Give me a prompt for {x}.",
+            "My {x} sounds thin — how do I fatten it?",
+            "What tempo and feel suits {x}?",
+            "How do I arrange {x} so it builds?",
+            "Critique the structure of {x}.",
         ],
-    },
-    "software": {
-        "user": [
-            "What's the cleanest way to debounce a search input in React?",
-            "How do I structure a Python project so imports don't get messy?",
-            "My git history is a tangle — how do I squash and rebase safely?",
-            "When should I reach for a database index, and what are the costs?",
-            "How do I containerize a small Flask app for local development?",
-        ],
-        "assistant": [
-            "Wrap the handler in a debounce that fires after the user pauses, and clean up the timer in a useEffect return to avoid leaks.",
-            "Use a src/ layout with a single top-level package and absolute imports; install in editable mode so paths resolve consistently.",
-            "Branch first, then interactive-rebase onto main, squashing fixups; never rewrite history that others have already pulled.",
-            "Index columns you filter or join on frequently; the cost is slower writes and extra storage, so don't index everything.",
+        "replies": [
+            "For {x}, keep the hook melodically higher than the verse and repeat one strong image.",
+            "Try a i–VI–III–VII move for {x}; it stays moody but resolves.",
+            "Carve mud around 300 Hz on {x} and use gentle parallel compression to keep it present.",
+            "Double-track {x}, pan the takes wide, and add a short room reverb to glue them.",
         ],
     },
-    "travel": {
-        "user": [
-            "Plan a five-day itinerary for first-timers in Lisbon.",
-            "What's the best way to see the national parks in Utah on a road trip?",
-            "How far ahead should I book flights to get a good price?",
-            "Give me a packing list for a week of summer hiking in the Alps.",
-            "Is it worth renting a car in Tokyo or should I rely on trains?",
+    "Writing & Stories": {
+        "weight": 1.1,
+        "nouns": [
+            "a short story about a lighthouse keeper", "stiff dialogue",
+            "a personal essay about moving cities", "a bedtime story's pacing",
+            "a sci-fi opening line", "a character's backstory", "a poem about autumn",
+            "a screenplay scene", "a blog post intro", "a newsletter hook",
+            "a villain's motivation", "a memoir chapter", "a fairy-tale retelling",
+            "a product announcement", "a wedding speech", "a cover letter",
         ],
-        "assistant": [
-            "Split it between Alfama and Belem, day-trip to Sintra, and leave an evening for a fado dinner and the miradouros at sunset.",
-            "Loop the Mighty Five counter-clockwise from Zion; base in Moab for Arches and Canyonlands and start hikes at dawn to beat heat.",
-            "For most routes the sweet spot is one to three months out; set a fare alert and be flexible by a day or two.",
-            "Layers, a packable rain shell, broken-in boots, sun protection, and a 25-liter pack — the weather flips fast at altitude.",
+        "frames": [
+            "Help me open {x}.",
+            "How do I make {x} less stiff?",
+            "Give me feedback on {x}.",
+            "What's a strong structure for {x}?",
+            "Rewrite {x} to be more vivid.",
+            "How do I raise the stakes in {x}?",
+            "What's a better ending for {x}?",
+            "Tighten {x} without losing the voice.",
         ],
-    },
-    "writing": {
-        "user": [
-            "Help me open a short story about a lighthouse keeper who stops seeing ships.",
-            "How do I make my dialogue sound less stiff?",
-            "Give me feedback on the pacing of a children's bedtime story.",
-            "What's a strong structure for a personal essay about moving cities?",
-            "Rewrite this sentence to be more vivid: 'The room was old and quiet.'",
-        ],
-        "assistant": [
-            "Open in the middle of his routine, then break it — the morning the horizon stays empty — so absence becomes the inciting image.",
-            "Cut the throat-clearing, let characters interrupt and talk past each other, and trust subtext to carry what they won't say.",
-            "Bedtime pacing should decelerate: shorter sentences, softer sounds, and a final image that resolves rather than excites.",
-            "Try a then-and-now spine: anchor a concrete scene on arrival, braid in memory, and close on what the new place revealed.",
+        "replies": [
+            "Open {x} in the middle of motion, then break the routine so absence becomes the inciting image.",
+            "Cut the throat-clearing in {x} and trust subtext to carry what the characters won't say.",
+            "Give {x} a then-and-now spine: anchor a concrete scene, braid in memory, close on what changed.",
+            "Replace abstractions in {x} with one specific, sensory detail per beat.",
         ],
     },
-    "diy": {
-        "user": [
-            "How do I patch and repaint a section of drywall after removing a shelf?",
-            "My kitchen cabinet hinges are loose. What's the fix?",
-            "What's the right way to build a simple raised garden bed?",
-            "How do I stop a door from sticking in humid weather?",
-            "Best approach to refinish a scratched wooden dining table?",
+    "Faith & Spirituality": {
+        "weight": 0.7,
+        "nouns": [
+            "the prodigal son parable", "Psalm 23", "the resurrection accounts",
+            "a sermon on forgiveness", "the beatitudes", "the book of Job",
+            "justification and sanctification", "the Lord's Prayer", "Romans 8",
+            "the parable of the sower", "the Sermon on the Mount", "Ecclesiastes",
+            "a small-group study on grace", "the prophets", "Holy Week", "the psalms of lament",
         ],
-        "assistant": [
-            "Cut a clean square, back it with a patch, mud in thin coats sanding between, then prime before matching the wall color.",
-            "Re-seat the screws into fresh wood — fill the stripped holes with glued toothpicks or dowels, then drive new screws.",
-            "Use untreated cedar, join corners with deck screws, line with landscape fabric, and fill with a soil-compost mix.",
-            "Sand the binding edge lightly, seal the raw wood so it doesn't absorb moisture, and check the hinges aren't sagging.",
+        "frames": [
+            "What does {x} teach about grace?",
+            "Can you explain the historical context of {x}?",
+            "How do early church writers interpret {x}?",
+            "I'm preparing a study on {x} — where should I anchor it?",
+            "What's the main argument of {x}?",
+            "How does {x} connect to {y}?",
+            "Walk me through {x} verse by verse.",
+            "What's a common misreading of {x}?",
+        ],
+        "replies": [
+            "In {x}, grace shows up as unearned — restoration tends to precede any rehearsed confession.",
+            "Read {x} in its original setting first; the imagery is doing theological work, not just decoration.",
+            "The earliest readers took {x} as concrete and communal, not merely private or symbolic.",
+            "Anchor a study of {x} in two or three cross-references so the theme is shown, not just asserted.",
+        ],
+    },
+    "Health & Wellness": {
+        "weight": 1.0,
+        "nouns": [
+            "deep sleep", "desk tension headaches", "vitamin gaps", "protein intake",
+            "a beginner strength routine", "recurring lower-back pain", "resting heart rate",
+            "screen-time eye strain", "a cutting diet", "magnesium supplements",
+            "morning fatigue", "hydration habits", "stress and cortisol",
+            "a half-marathon plan", "mobility for stiff hips", "caffeine timing",
+        ],
+        "frames": [
+            "What are evidence-based ways to improve {x}?",
+            "I've been struggling with {x} — what might help?",
+            "Does {x} actually matter, or is it overhyped?",
+            "How do I think about {x} versus {y}?",
+            "What's a sensible beginner approach to {x}?",
+            "Is my plan for {x} reasonable?",
+            "What habits move the needle on {x}?",
+            "When should I see a doctor about {x}?",
+        ],
+        "replies": [
+            "For {x}, the boring fundamentals — consistency, light, sleep, movement — beat any single supplement.",
+            "Start small with {x}: one repeatable change you can sustain for a few weeks, then reassess.",
+            "The evidence on {x} is modest; cover the basics from food and routine before adding anything.",
+            "Track {x} for two weeks so you're adjusting from data, not vibes.",
+        ],
+    },
+    "Food & Cooking": {
+        "weight": 0.9,
+        "nouns": [
+            "dense sourdough", "a restaurant-quality sear", "a weeknight chickpea dinner",
+            "silky carbonara", "a less bitter French press", "flaky pie crust",
+            "a weeknight stir-fry", "homemade pizza dough", "a braised short rib",
+            "fluffy pancakes", "a sheet-pan salmon", "caramelized onions",
+            "a vinaigrette that emulsifies", "crispy roast potatoes", "a pot of chili", "cold-brew coffee",
+        ],
+        "frames": [
+            "Why does my {x} keep going wrong?",
+            "How do I get {x} right at home?",
+            "Give me a quick approach to {x}.",
+            "What's the trick to {x}?",
+            "How do I make {x} ahead of time?",
+            "Scale {x} up for a dinner party.",
+            "What can I substitute in {x}?",
+            "How do I fix {x} that turned out bland?",
+        ],
+        "replies": [
+            "{x} usually comes down to temperature and timing — get those right and technique follows.",
+            "Season {x} in layers and taste as you go rather than fixing it all at the end.",
+            "For {x}, prep the components separately and combine at the last moment so nothing turns soggy.",
+            "Dry surfaces and high heat are the secret to {x} developing real flavor.",
+        ],
+    },
+    "Finance & Legal": {
+        "weight": 1.0,
+        "nouns": [
+            "a Roth IRA versus a 6% car loan", "index fund expense ratios",
+            "dollar-cost averaging", "an emergency fund", "capital gains on a stock sale",
+            "a rental property's cash flow", "a 401k rollover", "a freelance contract",
+            "an LLC versus sole proprietorship", "estimated quarterly taxes",
+            "a mortgage refinance", "an HSA", "diversifying a portfolio", "a will and beneficiaries",
+            "a startup equity grant", "credit card churning",
+        ],
+        "frames": [
+            "Should I prioritize {x}?",
+            "Explain how {x} works in plain terms.",
+            "Is {x} actually a good idea for me?",
+            "How do I think about {x} versus {y}?",
+            "What are the tax implications of {x}?",
+            "Walk me through the tradeoffs of {x}.",
+            "What questions should I ask before {x}?",
+            "How risky is {x}?",
+        ],
+        "replies": [
+            "With {x}, capture any guaranteed return first, then weigh certain gains against uncertain ones.",
+            "The mechanics of {x} are simpler than they sound — the cost is usually in fees and time, not complexity.",
+            "For {x}, write down your time horizon first; the right answer changes a lot with it.",
+            "Run {x} past the boring checklist: liquidity, fees, taxes, and what happens if you're wrong.",
+        ],
+    },
+    "Career & Work": {
+        "weight": 1.0,
+        "nouns": [
+            "a promotion case", "a tough 1:1", "an OKR draft", "a roadmap pitch",
+            "a salary negotiation", "a resignation message", "an exec status update",
+            "a hiring loop", "a performance review", "a cross-team conflict",
+            "a quarterly planning doc", "a stakeholder email", "a postmortem write-up",
+            "a career-ladder conversation", "a project kickoff", "a feedback message to a report",
+        ],
+        "frames": [
+            "Help me prepare {x}.",
+            "How do I frame {x} without sounding defensive?",
+            "What should go into {x}?",
+            "Critique my draft of {x}.",
+            "How do I handle {x} with a skip-level watching?",
+            "Make {x} more concise and direct.",
+            "What's the strongest opening for {x}?",
+            "How do I push back in {x} while staying collaborative?",
+        ],
+        "replies": [
+            "Lead {x} with the outcome and the ask, then support it — executives read top-down.",
+            "Frame {x} around impact and tradeoffs, not effort; decisions hinge on outcomes.",
+            "Keep {x} to one screen: context, recommendation, risks, next step.",
+            "In {x}, name the shared goal first, then disagree on the path — it stays collaborative.",
+        ],
+    },
+    "Software & Tech": {
+        "weight": 1.6,
+        "nouns": [
+            "debouncing a search input in React", "a messy Python import layout",
+            "a tangled git history", "when to add a database index", "containerizing a Flask app",
+            "a flaky integration test", "a memory leak in a Node service", "a slow SQL query",
+            "structuring a monorepo", "a CORS error", "rate-limiting an API",
+            "a TypeScript generic that won't infer", "caching with Redis", "a CI pipeline that's too slow",
+            "graceful shutdown in a worker", "a race condition in async code",
+        ],
+        "frames": [
+            "What's the cleanest way to handle {x}?",
+            "How do I debug {x}?",
+            "I'm stuck on {x} — what am I missing?",
+            "What are the tradeoffs around {x}?",
+            "Walk me through fixing {x}.",
+            "Is there a simpler approach to {x}?",
+            "How would you structure {x} in a small codebase?",
+            "What's the gotcha with {x}?",
+        ],
+        "replies": [
+            "For {x}, reach for the boring, well-supported pattern first and add cleanup so you don't leak resources.",
+            "Reproduce {x} in isolation, then bisect — most of the time the bug isn't where it looks.",
+            "The tradeoff with {x} is usually read speed versus write cost; pick based on your access pattern.",
+            "Keep {x} explicit and small; clever abstractions make this exact thing harder to debug later.",
+        ],
+    },
+    "Home & DIY": {
+        "weight": 0.7,
+        "nouns": [
+            "patching drywall", "loose cabinet hinges", "a raised garden bed",
+            "a sticking door", "refinishing a scratched table", "a leaky faucet",
+            "painting a high-traffic hallway", "mounting a TV on drywall",
+            "a squeaky stair tread", "weatherstripping a drafty window",
+            "building a simple bookshelf", "regrouting a shower", "a running toilet",
+            "sealing a concrete garage floor", "hanging heavy shelves", "fixing a fence post",
+        ],
+        "frames": [
+            "How do I tackle {x}?",
+            "What's the right fix for {x}?",
+            "What tools and materials do I need for {x}?",
+            "Walk me through {x} step by step.",
+            "What mistakes should I avoid with {x}?",
+            "Can I DIY {x} or should I call someone?",
+            "How long should {x} realistically take?",
+            "What's the cheap, durable way to do {x}?",
+        ],
+        "replies": [
+            "For {x}, prep is most of the job — surface, support, and the right fasteners.",
+            "Do {x} in thin layers and let each stage cure before the next or it'll show.",
+            "{x} is well within DIY range; just dry-fit everything before you commit.",
+            "Re-seat into fresh, solid material when you do {x} so the repair actually holds.",
+        ],
+    },
+    "Shopping & Marketplace": {
+        "weight": 0.6,
+        "nouns": [
+            "a used sofa listing", "pricing a road bike to sell", "a Facebook Marketplace deal",
+            "a used-car offer", "a laptop comparison", "a mattress purchase",
+            "negotiating a furniture price", "a stroller resale value", "a camera kit bundle",
+            "an espresso machine under $300", "a lawnmower listing", "haggling on a desk",
+            "a phone trade-in", "a power-tool combo deal", "flipping a thrift find", "a winter-coat sale",
+        ],
+        "frames": [
+            "How should I price {x}?",
+            "Help me write {x}.",
+            "Is {x} a good deal?",
+            "How do I negotiate {x}?",
+            "What should I check before {x}?",
+            "Compare my options for {x}.",
+            "What's a fair counteroffer on {x}?",
+            "How do I make {x} sell faster?",
+        ],
+        "replies": [
+            "Price {x} just below the nearest round number and lead the listing with the strongest photo.",
+            "For {x}, anchor on recent comparable sales, not the original retail price.",
+            "Before {x}, inspect the wear points and ask why they're selling — it sets your leverage.",
+            "Bundle or sweeten {x} slightly rather than dropping the headline price; it moves faster.",
+        ],
+    },
+    "Travel & Outdoors": {
+        "weight": 0.8,
+        "nouns": [
+            "five days in Lisbon", "a Utah national-parks road trip", "booking cheap flights",
+            "a week hiking the Alps", "getting around Tokyo", "a long weekend in Mexico City",
+            "a coastal camping trip", "a first backpacking loop", "a layover in Reykjavik",
+            "a family beach week", "a fall foliage drive", "a desert sunrise hike",
+            "a budget Europe itinerary", "a national-park permit", "a sailing day trip", "a winter cabin getaway",
+        ],
+        "frames": [
+            "Plan {x}.",
+            "What's the best way to do {x}?",
+            "How far ahead should I book {x}?",
+            "Give me a packing list for {x}.",
+            "Is {x} worth it, or is there a better option?",
+            "What would you not miss on {x}?",
+            "How do I do {x} on a budget?",
+            "What's a realistic itinerary for {x}?",
+        ],
+        "replies": [
+            "For {x}, anchor each day around one priority and leave slack — over-packed itineraries fall apart.",
+            "Book {x} a few weeks out, set a fare alert, and stay flexible by a day or two.",
+            "Pack {x} in layers with one packable shell; conditions flip faster than forecasts suggest.",
+            "On {x}, start early to beat crowds and heat, and keep an easy bailout option.",
+        ],
+    },
+    "Misc & Curiosity": {
+        "weight": 1.1,
+        "nouns": [
+            "why the sky is blue", "how noise-canceling headphones work",
+            "why leap years exist", "how vaccines train the immune system",
+            "why onions make you cry", "how GPS knows your location",
+            "what causes déjà vu", "how a microwave heats food",
+            "why cats purr", "how bridges handle expansion", "what makes glass transparent",
+            "how compound interest snowballs", "why the ocean is salty",
+            "how planes stay in the air", "what fermentation actually is", "how memory foam works",
+        ],
+        "frames": [
+            "Explain {x} simply.",
+            "I've always wondered: {x}?",
+            "What's the real answer to {x}?",
+            "Break down {x} like I'm twelve.",
+            "Is the common explanation of {x} actually right?",
+            "How does {x} compare to {y}?",
+            "What's a surprising fact about {x}?",
+            "Walk me through {x} from first principles.",
+        ],
+        "replies": [
+            "The short version of {x}: it's a simple mechanism that feels mysterious until you see the one key step.",
+            "Most people get {x} half-right — the intuitive story misses what's actually doing the work.",
+            "Think of {x} as a chain of small, ordinary effects that add up to something striking.",
+            "Start {x} from the underlying physics and the 'weird' part stops being weird.",
         ],
     },
 }
 
-# About how many conversations to generate per topic. With ~10 topics this is
-# enough for UMAP (n_neighbors=15) and HDBSCAN to find structure.
-PER_TOPIC = 7
+# Message-count long tail: (cumulative probability, min, max) exchanges.
+# One exchange = a user + an assistant turn, so msg_count ≈ 2 × exchanges.
+_EXCHANGE_TIERS = [
+    (0.70, 1, 3),    # most chats are short
+    (0.90, 4, 8),
+    (0.98, 9, 20),
+    (1.00, 21, 45),  # rare marathons
+]
 
 
-def _make_turns(rng: random.Random, topic: dict[str, list[str]]) -> list[tuple[str, str]]:
-    """Build an alternating user/assistant transcript for one conversation."""
-    n_exchanges = rng.randint(1, 3)
+def _n_exchanges(rng: random.Random) -> int:
+    r = rng.random()
+    for cutoff, lo, hi in _EXCHANGE_TIERS:
+        if r < cutoff:
+            return rng.randint(lo, hi)
+    return rng.randint(21, 45)
+
+
+def _two_distinct(rng: random.Random, items: list[str]) -> tuple[str, str]:
+    a = rng.choice(items)
+    b = rng.choice(items)
+    while b == a and len(items) > 1:
+        b = rng.choice(items)
+    return a, b
+
+
+def _make_turns(rng: random.Random, topic: dict) -> list[tuple[str, str]]:
+    """Alternating user/assistant transcript; each exchange uses fresh vocab."""
     turns: list[tuple[str, str]] = []
-    for _ in range(n_exchanges):
-        turns.append(("user", rng.choice(topic["user"])))
-        turns.append(("assistant", rng.choice(topic["assistant"])))
+    for _ in range(_n_exchanges(rng)):
+        x, y = _two_distinct(rng, topic["nouns"])
+        user = rng.choice(topic["frames"]).format(x=x, y=y)
+        asst = rng.choice(topic["replies"]).format(x=x, y=y)
+        turns.append(("user", user))
+        turns.append(("assistant", asst))
     return turns
 
 
-def _title(rng: random.Random, topic: dict[str, list[str]]) -> str:
-    opener = rng.choice(topic["user"])
-    return opener.rstrip("?.").split(" — ")[0][:60]
+def _title(turns: list[tuple[str, str]]) -> str:
+    opener = turns[0][1]
+    return opener.rstrip("?.").split(" — ")[0][:64]
+
+
+def _allocate(rng: random.Random, n: int) -> list[str]:
+    """Assign each of n conversations a topic, proportional to topic weight."""
+    keys = list(TOPICS)
+    weights = [TOPICS[k]["weight"] for k in keys]
+    total = sum(weights)
+    counts = {k: int(n * w / total) for k, w in zip(keys, weights)}
+    # distribute rounding remainder onto the heaviest topics
+    while sum(counts.values()) < n:
+        k = max(keys, key=lambda k: TOPICS[k]["weight"] / (counts[k] + 1))
+        counts[k] += 1
+    assignments = [k for k, c in counts.items() for _ in range(c)]
+    rng.shuffle(assignments)
+    return assignments
 
 
 def build_claude(rng: random.Random, items: list[tuple[str, list[tuple[str, str]]]]) -> list[dict]:
-    base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2024, 6, 1, tzinfo=timezone.utc)
     out = []
     for i, (title, turns) in enumerate(items):
-        created = base + timedelta(days=i, hours=rng.randint(0, 23))
+        created = base + timedelta(hours=rng.randint(0, 24 * 500))
         out.append(
             {
                 "uuid": str(uuid.UUID(int=rng.getrandbits(128))),
@@ -222,10 +493,10 @@ def build_claude(rng: random.Random, items: list[tuple[str, list[tuple[str, str]
 
 
 def build_chatgpt(rng: random.Random, items: list[tuple[str, list[tuple[str, str]]]]) -> list[dict]:
-    base = datetime(2025, 6, 1, tzinfo=timezone.utc)
+    base = datetime(2024, 6, 1, tzinfo=timezone.utc)
     out = []
     for i, (title, turns) in enumerate(items):
-        created = base + timedelta(days=i, hours=rng.randint(0, 23))
+        created = base + timedelta(hours=rng.randint(0, 24 * 500))
         mapping: dict[str, dict] = {}
         parent = None
         last_id = None
@@ -258,14 +529,14 @@ def build_chatgpt(rng: random.Random, items: list[tuple[str, list[tuple[str, str
 
 def main() -> None:
     out_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join("..", "sample")
+    n = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_N
     os.makedirs(out_dir, exist_ok=True)
     rng = random.Random(42)  # deterministic output
 
-    # Generate per-topic conversations, then split across the two export formats.
     conversations: list[tuple[str, list[tuple[str, str]]]] = []
-    for topic in TOPICS.values():
-        for _ in range(PER_TOPIC):
-            conversations.append((_title(rng, topic), _make_turns(rng, topic)))
+    for key in _allocate(rng, n):
+        turns = _make_turns(rng, TOPICS[key])
+        conversations.append((_title(turns), turns))
     rng.shuffle(conversations)
 
     half = len(conversations) // 2
