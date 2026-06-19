@@ -2,6 +2,26 @@
   "name": "constellation-viewer",
   "private": true,
   "version": "0.1.0",
+  "description": "Interactive semantic map viewer for Constellation — renders Claude + ChatGPT conversations as a 2D/3D map.",
+  "license": "MIT",
+  "author": "Jesse Spencer",
+  "homepage": "https://github.com/jessespencer/constellation#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jessespencer/constellation.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jessespencer/constellation/issues"
+  },
+  "keywords": [
+    "semantic-map",
+    "embeddings",
+    "umap",
+    "visualization",
+    "claude",
+    "chatgpt",
+    "conversations"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",

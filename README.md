@@ -1,4 +1,6 @@
-# Constellation — local semantic map of my AI chats
+# Constellation — local semantic map of your AI chats
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Places every Claude and ChatGPT conversation as a dot on a 2D semantic map:
 **proximity = topical similarity**, dots **colored by discovered theme**. Hover
@@ -37,7 +39,24 @@ leaves the machine** — no chat content is sent anywhere.
 - **Regions** toggle — soft tinted hulls around each theme cluster.
 - Plus the originals: pan/zoom, search, Theme/Source coloring, click → transcript.
 
-## Run it end to end
+## Quick start (no data needed)
+
+Try it on a synthetic, themed sample export — no exports, no accounts, fully
+local:
+
+```bash
+# 1. Build a map from generated sample conversations
+cd pipeline && make demo
+
+# 2. View it
+cd ../viewer && npm install && npm run dev   # open the printed localhost URL
+```
+
+`make demo` synthesizes ~70 fake Claude + ChatGPT conversations across a dozen
+themes (`pipeline/sample_data.py`), then builds the map from them. It's the
+fastest way to see what the tool does before pointing it at your own chats.
+
+## Run it on your own chats
 
 ```bash
 # 1. Build the map (normalize exports -> local embeddings -> clusters -> map.json)
@@ -49,6 +68,20 @@ cd ../viewer && npm install && npm run dev   # open the printed localhost URL
 
 That's the whole thing. `make map` writes `viewer/public/map.json` plus one
 `viewer/public/conversations/<id>.json` per conversation (lazy-loaded on click).
+
+### Getting your data
+
+Both exports are free and stay on your machine:
+
+- **Claude** — [claude.ai](https://claude.ai) → **Settings → Privacy → Export
+  data**. You'll get an email with a `conversations.json`.
+- **ChatGPT** — [chatgpt.com](https://chatgpt.com) → **Settings → Data controls
+  → Export data**. The email contains a `conversations.json` (large accounts may
+  be split into `conversations-000.json`, `conversations-001.json`, …).
+
+Unzip each export into the repo root (e.g. `Claude/` and `Chat GPT/`, as
+`.gitignore` already expects) and run `make map`. Both directories are
+git-ignored, so your chat data is never committed.
 
 ### Pointing at your exports
 
@@ -121,3 +154,8 @@ cd pipeline && .venv/bin/python edges.py --k 8 --min-sim 0.5
   `make map PYTHON=/path/to/python3.12`.
 - **Node 18+** for the viewer.
 - ~2 GB disk for the model + Python deps (torch).
+
+## License
+
+[MIT](LICENSE). The bundled Michroma font is licensed separately under the
+[SIL Open Font License](viewer/public/fonts/michroma/OFL.txt).
