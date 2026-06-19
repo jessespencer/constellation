@@ -18,13 +18,21 @@ OUT     ?= ../viewer/public
 SAMPLE  ?= ../sample
 N       ?= 950
 
-.PHONY: map venv install clean categories sample demo
+.PHONY: map map-code venv install clean categories sample demo
 
 # Full build: discover layout/edges, then reassign to the curated high-level
 # taxonomy (taxonomy.py) for coherent, human-readable theme categories.
 map: install
 	$(PY) make_map.py --input $(INPUT) --out $(OUT)
 	$(PY) categorize.py --map $(OUT)/map.json --input $(INPUT)
+
+# Same as `map`, but also fold in your local Claude Code sessions
+# (~/.claude/projects, one node per session) as a third source. Opt-in and
+# fully local — map.json + conversations/ stay gitignored, nothing is uploaded.
+# Override the location with `make map-code CLAUDE_CODE_ROOT=/path/to/projects`.
+map-code: install
+	CONSTELLATION_CLAUDE_CODE=1 $(PY) make_map.py --input $(INPUT) --out $(OUT)
+	CONSTELLATION_CLAUDE_CODE=1 $(PY) categorize.py --map $(OUT)/map.json --input $(INPUT)
 
 # Re-apply the taxonomy to an existing map.json (after editing taxonomy.py) —
 # no re-embedding, no UMAP.

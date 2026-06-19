@@ -4,10 +4,15 @@ Both exports drift from their documented schemas, so we classify each
 `conversations*.json` by *content* (does an item have `chat_messages` vs a
 `mapping` tree?) rather than trusting filenames.
 
+Optionally we also fold in local **Claude Code** session transcripts — the
+per-session `.jsonl` files under `~/.claude/projects/` — as a third source.
+That sweep is opt-in (env var `CONSTELLATION_CLAUDE_CODE=1`, set by
+`make map-code`) because those files live outside the repo and are personal.
+
 Normalized record:
     {
-      "id":         "claude-<uuid>" | "chatgpt-<id>",
-      "source":     "claude" | "chatgpt",
+      "id":         "claude-<uuid>" | "chatgpt-<id>" | "claude-code-<session>",
+      "source":     "claude" | "chatgpt" | "claude-code",
       "title":      str,
       "created_at": ISO-8601 UTC string,
       "messages":   [ { "role": "user"|"assistant", "text": str }, ... ],
@@ -33,6 +38,28 @@ def _strip_pua(text: str) -> str:
     text = _CITE_SPAN.sub("", text)
     text = _PUA.sub("", text)
     return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
+# Claude Code injects scaffolding into the user turn: slash/local-command
+# wrappers, the harness's appended system reminders, background task
+# notifications, and image placeholders. None of it is something the human
+# typed, so we strip these blocks and keep only the real prose around them.
+_CC_TAGS = (
+    "command-name", "command-message", "command-args", "command-contents",
+    "local-command-caveat", "local-command-stdout", "local-command-stderr",
+    "system-reminder", "task-notification", "bash-input", "bash-stdout",
+    "bash-stderr",
+)
+_CC_BLOCK = re.compile(r"<(" + "|".join(_CC_TAGS) + r")>[\s\S]*?</\1>")
+_CC_ORPHAN = re.compile(r"</?(?:" + "|".join(_CC_TAGS) + r")>")
+_CC_IMAGE = re.compile(r"\[Image:[^\]]*\]")
+
+
+def _strip_cc_scaffold(text: str) -> str:
+    text = _CC_BLOCK.sub("", text)
+    text = _CC_ORPHAN.sub("", text)  # unpaired leftovers
+    text = _CC_IMAGE.sub("", text)
+    return text.strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -178,11 +205,112 @@ def parse_chatgpt(conversations: list[dict]) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# Claude Code (local session transcripts)
+# --------------------------------------------------------------------------- #
+# Claude Code stores one JSONL file per session at
+# ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl. Each line is a typed
+# event; the bulk are tool I/O and bookkeeping, so we keep only the human's
+# typed prompts (user events whose `message.content` is a plain string) and the
+# assistant's prose (text blocks, skipping thinking/tool_use). Subagent
+# transcripts live in a `subagents/` subfolder and are excluded.
+CLAUDE_CODE_DEFAULT_ROOT = "~/.claude/projects"
+
+
+def find_claude_code_sessions(root: str) -> list[str]:
+    """Every top-level session `.jsonl` under `root` (skips subagent sidechains)."""
+    root = os.path.expanduser(root)
+    hits: list[str] = []
+    for dirpath, _dirs, files in os.walk(root):
+        if os.sep + "subagents" in dirpath:
+            continue
+        for name in files:
+            if name.endswith(".jsonl"):
+                hits.append(os.path.join(dirpath, name))
+    return sorted(hits)
+
+
+def parse_claude_code(path: str) -> dict | None:
+    """One session `.jsonl` -> one normalized record, or None if it has no
+    human-typed prompt (pure tool/automation sessions are dropped)."""
+    title = ""
+    created_at = ""
+    messages: list[dict] = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("isSidechain"):  # inlined subagent turn — not the user's
+                continue
+            etype = e.get("type")
+            if etype == "ai-title":
+                t = (e.get("aiTitle") or "").strip()
+                if t:
+                    title = t  # last non-empty title wins (it updates over time)
+            elif etype == "user":
+                content = (e.get("message") or {}).get("content")
+                if not isinstance(content, str):  # array content == tool_result
+                    continue
+                txt = _strip_pua(_strip_cc_scaffold(content))
+                if txt:
+                    if not created_at:
+                        created_at = _iso_from_string(e.get("timestamp"))
+                    messages.append({"role": "user", "text": txt})
+            elif etype == "assistant":
+                blocks = (e.get("message") or {}).get("content") or []
+                txt = "\n".join(
+                    (b.get("text") or "")
+                    for b in blocks
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ).strip()
+                if txt:
+                    if not created_at:
+                        created_at = _iso_from_string(e.get("timestamp"))
+                    messages.append({"role": "assistant", "text": _strip_pua(txt)})
+
+    if not any(m["role"] == "user" for m in messages):
+        return None
+    session_id = os.path.splitext(os.path.basename(path))[0]
+    return {
+        "id": f"claude-code-{session_id}",
+        "source": "claude-code",
+        "title": title or (messages[0]["text"].splitlines()[0][:60] or "Untitled session"),
+        "created_at": created_at,
+        "messages": messages,
+        "msg_count": len(messages),
+    }
+
+
+def load_claude_code(root: str) -> list[dict]:
+    out: list[dict] = []
+    for path in find_claude_code_sessions(root):
+        rec = parse_claude_code(path)
+        if rec:
+            out.append(rec)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Entry
 # --------------------------------------------------------------------------- #
-def load_all(root: str) -> list[dict]:
+def load_all(
+    root: str,
+    include_claude_code: bool | None = None,
+    claude_code_root: str | None = None,
+) -> list[dict]:
+    """Normalize every export under `root`. When `include_claude_code` is true
+    (defaults to the `CONSTELLATION_CLAUDE_CODE` env var), also fold in local
+    Claude Code sessions from `claude_code_root` (default `~/.claude/projects`,
+    overridable via the `CLAUDE_CODE_ROOT` env var)."""
+    if include_claude_code is None:
+        include_claude_code = os.environ.get("CONSTELLATION_CLAUDE_CODE") == "1"
+
     files = find_export_files(root)
-    if not files:
+    if not files and not include_claude_code:
         raise SystemExit(f"No conversations*.json found under {root!r}")
 
     records: list[dict] = []
@@ -206,6 +334,15 @@ def load_all(root: str) -> list[dict]:
         records.extend(fresh)
         print(f"  + {len(fresh):4d} {kind:8s} from {os.path.relpath(path, root)}")
 
+    if include_claude_code:
+        cc_root = claude_code_root or os.environ.get(
+            "CLAUDE_CODE_ROOT", CLAUDE_CODE_DEFAULT_ROOT
+        )
+        cc = [r for r in load_claude_code(cc_root) if r["id"] not in seen_ids]
+        seen_ids.update(r["id"] for r in cc)
+        records.extend(cc)
+        print(f"  + {len(cc):4d} claude-code from {os.path.expanduser(cc_root)}")
+
     records.sort(key=lambda r: r["created_at"])
     return records
 
@@ -215,6 +352,6 @@ if __name__ == "__main__":
 
     root = sys.argv[1] if len(sys.argv) > 1 else "."
     recs = load_all(root)
-    n_claude = sum(r["source"] == "claude" for r in recs)
-    n_chatgpt = sum(r["source"] == "chatgpt" for r in recs)
-    print(f"\nTotal: {len(recs)}  (claude={n_claude}, chatgpt={n_chatgpt})")
+    by_source = {s: sum(r["source"] == s for r in recs) for s in {r["source"] for r in recs}}
+    summary = ", ".join(f"{s}={n}" for s, n in sorted(by_source.items()))
+    print(f"\nTotal: {len(recs)}  ({summary})")

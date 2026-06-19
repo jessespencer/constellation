@@ -208,8 +208,8 @@ def main() -> None:
             "model": MODEL_NAME,
             "n": n,
             "sources": {
-                "claude": sum(r["source"] == "claude" for r in records),
-                "chatgpt": sum(r["source"] == "chatgpt" for r in records),
+                s: sum(r["source"] == s for r in records)
+                for s in sorted({r["source"] for r in records})
             },
             "n_clusters": n_clusters,
         },

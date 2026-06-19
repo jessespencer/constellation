@@ -111,6 +111,29 @@ a different location:
 cd pipeline && make map INPUT=/path/to/exports
 ```
 
+### Add your Claude Code sessions
+
+Claude Code keeps a transcript of every coding session on your machine, one
+JSONL file per session under `~/.claude/projects/`. `make map-code` builds the
+map exactly like `make map`, but also folds those in as a **third source** —
+one node per session, alongside your Claude and ChatGPT chats:
+
+```bash
+cd pipeline && make map-code
+```
+
+Sessions show up as their own color in the viewer's **Source** mode (Claude
+blue, ChatGPT amber, Claude Code green), while still clustering into the same
+topical categories. Each node embeds only your *typed prompts* and the
+assistant's prose — tool calls, file dumps, and tool output are stripped — so
+the map reflects what you were actually working on. Subagent transcripts are
+skipped, and sessions with no human prompt are dropped.
+
+It's opt-in for a reason: these transcripts are personal and live outside the
+repo. Nothing is uploaded, and `map.json` + `viewer/public/conversations/`
+stay git-ignored, same as your chat exports. Point at a different location with
+`make map-code CLAUDE_CODE_ROOT=/path/to/projects`.
+
 ### Offline labeling
 
 Cluster names come from class-based TF-IDF (BERTopic-style top terms). If a
