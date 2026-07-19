@@ -6,7 +6,8 @@ what's specific to Constellation.
 
 ## What this is
 
-A local semantic map of Claude + ChatGPT conversations. Two halves:
+A local semantic map of Claude, ChatGPT, and (opt-in) Claude Code conversations.
+Two halves:
 
 - **`pipeline/`** (Python) — normalizes chat exports, embeds them locally, clusters
   and projects to 2D/3D, and emits `viewer/public/map.json` plus one
@@ -24,15 +25,18 @@ machine — never add telemetry or external calls that send conversation content
 
 | Command | What it does |
 | --- | --- |
-| `make demo` | Synthesize ~70 sample conversations and build a map (no real data needed) |
+| `make demo` | Synthesize ~950 sample conversations and build a map (no real data needed) |
 | `make map` | Full build from real exports in repo root → `map.json` + transcripts |
-| `make map-offline` | Same, but skip Ollama labeling (top-terms only) |
+| `make map-code` | Same as `map`, plus local Claude Code sessions (`~/.claude/projects`) as a third source |
+| `make map-offline` | Same as `map`, but skip Ollama labeling (top-terms only) |
 | `make categories` | Re-apply the curated taxonomy without re-embedding |
 | `make sample` | Generate synthetic exports only |
-| `make clean` | Remove the venv and caches |
+| `make clean` | Delete the generated `map.json` + `conversations/` (leaves the venv and embedding cache intact) |
 
 - Override the interpreter: `make map PYTHON=/path/to/python3.12`.
 - Point at exports elsewhere: `make map INPUT=/path/to/exports`.
+- Change the sample size: `make demo N=400`.
+- Point `map-code` elsewhere: `make map-code CLAUDE_CODE_ROOT=/path/to/projects`.
 - Retune edges without re-embedding: `.venv/bin/python edges.py --k 8 --min-sim 0.5`.
 
 **Viewer** (run from `viewer/`):
@@ -50,9 +54,11 @@ The viewer needs a `map.json`; run a pipeline target first.
 
 **Viewer (TS/React):**
 - React components and imperative-handle modules use **default exports**
-  (`export default function App()`, `export default ThreeView`). Pure helper
-  modules (`bloom.ts`, `heat.ts`, `labelLayout.ts`, `projection.ts`, `ui.tsx`)
-  use **named exports**. Follow whichever pattern the neighboring file uses.
+  (`export default function App()`, `export default ThreeView`; likewise
+  `Drawer.tsx`, `LayersPanel.tsx`, `ReadoutCard.tsx`). Pure helper modules
+  (`bloom.ts`, `bloom3d.ts`, `heat.ts`, `labelLayout.ts`, `projection.ts`,
+  `ui.tsx`) use **named exports**. Follow whichever pattern the neighboring
+  file uses.
 - Functional components with hooks. `camelCase` values/functions,
   `PascalCase` components/types. `const` over `let`.
 - Heavy rendering is hand-written canvas / Three.js, not a component-per-dot —
@@ -79,15 +85,20 @@ The pipeline → viewer boundary is `viewer/public/map.json`:
 
 ```jsonc
 {
-  "meta":     { "generated_at", "model", "n", "sources": { "claude", "chatgpt" }, "n_clusters" },
+  "meta":     { "generated_at", "model", "n", "sources": { "claude", "chatgpt", "claude-code" }, "n_clusters" },
   "clusters": [ { "id", "label", "terms": [...], "color", "count", "cx", "cy" } ],
-  "nodes":    [ { "id", "source", "title", "created_at", "msg_count", "cluster", "x", "y" } ],
+  "nodes":    [ { "id", "source", "title", "created_at", "msg_count", "cluster", "x", "y", "density" } ],
   "edges":    [ { "source": id, "target": id, "weight": cosine_sim, "bridge": bool } ]
 }
 ```
 
-Changing this shape means touching both sides — `make_map.py` (emit) and the
-viewer's `types.ts` / consumers.
+`meta.sources` keys are derived from the records rather than hardcoded, so the
+set depends on what was imported — `claude-code` only appears after `make
+map-code`. `nodes[].density` is *not* written by `make_map.py`; the
+`categorize.py` pass adds it afterward, so both emitters matter.
+
+Changing this shape means touching both sides — `make_map.py` and
+`categorize.py` (emit) and the viewer's `types.ts` / consumers.
 
 ## Git
 
