@@ -134,7 +134,7 @@ const INFO_SECTIONS: { heading: string; items: { name: string; body: string }[] 
       { name: "Edges", body: "Draw the links between related conversations." },
       {
         name: "Bridges",
-        body: "Show only cross-theme links — the conversations that connect otherwise separate topics.",
+        body: "Pick out the cross-theme links in violet — the conversations that connect otherwise separate topics. Layer it over Edges, or show it alone.",
       },
       { name: "Regions", body: "Trace a soft hull around each theme cluster." },
       { name: "Labels", body: "Float each theme's name over its cluster." },
@@ -757,6 +757,7 @@ export default function App() {
         </button>
 
         <LayersPanel
+          layout={layout}
           showEdges={showEdges}
           setShowEdges={setShowEdges}
           bridgesOnly={bridgesOnly}

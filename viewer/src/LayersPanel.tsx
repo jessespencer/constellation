@@ -1,8 +1,9 @@
 import { LayerRow, Segmented, SourceRow } from "./ui";
-import type { ColorMode, SizeMode, Source } from "./types";
+import type { ColorMode, Layout, SizeMode, Source } from "./types";
 import { SOURCE_COLORS, SOURCE_LABELS } from "./types";
 
 interface Props {
+  layout: Layout;
   showEdges: boolean;
   setShowEdges: (v: boolean) => void;
   bridgesOnly: boolean;
@@ -39,12 +40,14 @@ export default function LayersPanel(props: Props) {
         on={props.bridgesOnly}
         onToggle={() => props.setBridgesOnly(!props.bridgesOnly)}
       />
-      <LayerRow
-        icon="regions"
-        label="Regions"
-        on={props.showRegions}
-        onToggle={() => props.setShowRegions(!props.showRegions)}
-      />
+      {props.layout !== "3d" && (
+        <LayerRow
+          icon="regions"
+          label="Regions"
+          on={props.showRegions}
+          onToggle={() => props.setShowRegions(!props.showRegions)}
+        />
+      )}
       <LayerRow
         icon="labels"
         label="Labels"

@@ -24,8 +24,9 @@ const GLOW_MULT = 3.0; // glow sprite diameter relative to core radius (minimal)
 const MAX_GLOW = 15; // px cap so cores stay crisp points, never a bloom blob
 const REGION_PAD = 5; // world units to expand cluster hulls
 
-const EDGE_RGB = "130,205,235"; // light cyan hairline (echoes the bridge accent, kept faint)
-const ACCENT_RGB = "95,220,255"; // bridge / active
+const EDGE_RGB = "130,205,235"; // cool cyan ambient hairline, kept faint
+const ACCENT_RGB = "95,220,255"; // active: hover / selection highlight
+const BRIDGE_RGB = "154,140,255"; // cool violet cross-theme link — distinct by hue, not glare
 
 // zoom floor — low enough that a zoomed-well-out framing (e.g. the loose
 // constellation default) isn't clamped, and users can pull back to take in the
@@ -321,8 +322,8 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
           strong.push(ei);
           continue;
         }
-        if (!showEdges) continue; // ambient field hidden
-        const a = focused ? 0.04 : straightEdges ? 0.1 : 0.1 + e.w * 0.08;
+        if (!showEdges) continue; // ambient field hidden (bridges route to the violet pass below)
+        const a = hi >= 0 ? 0.04 : straightEdges ? 0.16 : 0.16 + e.w * 0.08; // dim only on hover, not for Bridges
         ctx.globalAlpha = a;
         ctx.lineWidth = straightEdges ? 0.8 : 0.6 + e.w * 0.5;
         ctx.strokeStyle = `rgb(${EDGE_RGB})`;
@@ -330,17 +331,23 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(props, r
       }
     }
 
-    // highlighted pass on top, in accent cyan.
-    // Hover/selection should pop, but the standing Bridges layer stays soft —
-    // thin, faint hairlines that match the 3D view instead of a bright cyan wall.
+    // Highlighted pass on top. Two distinct roles share this `strong` set:
+    //  • hover/selection — should POP in bright accent cyan;
+    //  • the standing Bridges layer — reads as a *different kind* of link, so it
+    //    gets its own warm amber hue at low opacity rather than luminance glare.
     const hoverFocus = hi >= 0;
     for (const ei of strong) {
       const e = edges[ei];
-      // Standing Bridges layer matches the 3D view's material verbatim:
-      // flat 0.55 opacity, uniform thin line. Hover/selection still pops.
-      ctx.globalAlpha = hoverFocus ? 0.5 + e.w * 0.35 : 0.55;
-      ctx.lineWidth = hoverFocus ? 0.9 + e.w * 1.4 : 1;
-      ctx.strokeStyle = `rgba(${ACCENT_RGB},${hoverFocus ? 0.85 : 1})`;
+      if (hoverFocus) {
+        ctx.globalAlpha = 0.5 + e.w * 0.35;
+        ctx.lineWidth = 0.9 + e.w * 1.4;
+        ctx.strokeStyle = `rgba(${ACCENT_RGB},0.85)`;
+      } else {
+        // standing Bridges: dim violet, thin — distinct by hue, matches 3D
+        ctx.globalAlpha = 0.22;
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = `rgb(${BRIDGE_RGB})`;
+      }
       drawEdge(sx[e.si], sy[e.si], sx[e.ti], sy[e.ti]);
     }
     ctx.globalAlpha = 1;

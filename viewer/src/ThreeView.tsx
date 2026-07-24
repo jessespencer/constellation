@@ -11,8 +11,8 @@ import { SOURCE_COLORS, DEFAULT_ZOOM } from "./types";
 import { heatColor } from "./heat";
 import type { Dims } from "./projection";
 
-const INK = new THREE.Color(0x82cdeb); // light cyan edge hairline (echoes the bridge accent, kept faint)
-const BRIDGE = new THREE.Color(0x5fdcff); // accent cyan for cross-cluster links
+const INK = new THREE.Color(0x82cdeb); // cool cyan ambient edge hairline, kept faint
+const BRIDGE = new THREE.Color(0x9a8cff); // cool violet cross-cluster link — distinct by hue, not glare
 const BASE3D = 3.4; // node base size; minimal glow keeps stars crisp
 const HIT_PAD = 10; // px slack around a dot's rendered radius for easier hovering
 
@@ -232,8 +232,8 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
       return new THREE.LineSegments(g, m);
     }
     const bridgeEdges = edges.filter((e) => e.bridge);
-    const edgesObj = buildLines(edges, INK, 0.1); // cool faint hairlines
-    const bridgesObj = buildLines(bridgeEdges, BRIDGE, 0.55);
+    const edgesObj = buildLines(edges, INK, 0.16); // cool faint hairlines
+    const bridgesObj = buildLines(bridgeEdges, BRIDGE, 0.22); // dim violet, distinct by hue
     bridgesObj.visible = false;
     scene.add(edgesObj);
     scene.add(bridgesObj);
@@ -457,7 +457,7 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
   useEffect(() => {
     const a = api.current;
     if (!a) return;
-    a.edgesObj.visible = props.showEdges && !props.bridgesOnly;
+    a.edgesObj.visible = props.showEdges;
     a.bridgesObj.visible = props.bridgesOnly;
   }, [props.showEdges, props.bridgesOnly]);
 
@@ -470,7 +470,11 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
     if (!a) return;
     const { nodes } = props.data;
     const hidden = props.hiddenSources;
-    const rewrite = (obj: THREE.LineSegments, list: ResolvedEdge[]) => {
+    const rewrite = (
+      obj: THREE.LineSegments,
+      list: ResolvedEdge[],
+      collapseBridges: boolean
+    ) => {
       const arr = (obj.geometry.getAttribute("position") as THREE.BufferAttribute)
         .array as Float32Array;
       for (let i = 0; i < list.length; i++) {
@@ -478,7 +482,13 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
         const a3 = e.si * 3;
         const b3 = e.ti * 3;
         const off = i * 6;
-        if (hidden.has(nodes[e.si].source) || hidden.has(nodes[e.ti].source)) {
+        // collapse: endpoint hidden by source filter, or a bridge that the violet
+        // layer now owns (so it isn't also drawn faint-cyan here)
+        if (
+          hidden.has(nodes[e.si].source) ||
+          hidden.has(nodes[e.ti].source) ||
+          (collapseBridges && e.bridge)
+        ) {
           // both endpoints at the source node -> degenerate, draws nothing
           arr[off] = arr[off + 3] = a.bloom.pos[a3];
           arr[off + 1] = arr[off + 4] = a.bloom.pos[a3 + 1];
@@ -494,9 +504,9 @@ const ThreeView = forwardRef<ThreeViewHandle, Props>(function ThreeView(props, r
       }
       (obj.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
     };
-    rewrite(a.edgesObj, a.edgeList);
-    rewrite(a.bridgesObj, a.bridgeList);
-  }, [props.hiddenSources, props.data]);
+    rewrite(a.edgesObj, a.edgeList, props.bridgesOnly);
+    rewrite(a.bridgesObj, a.bridgeList, false);
+  }, [props.hiddenSources, props.data, props.bridgesOnly]);
 
   // ---- labels toggle ---------------------------------------------------- //
   useEffect(() => {
