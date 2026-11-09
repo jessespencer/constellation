@@ -85,7 +85,7 @@ The pipeline → viewer boundary is `viewer/public/map.json`:
 
 ```jsonc
 {
-  "meta":     { "generated_at", "model", "n", "sources": { "claude", "chatgpt", "claude-code" }, "n_clusters" },
+  "meta":     { "generated_at", "model", "n", "sources": { "claude", "chatgpt", "claude-code" }, "n_clusters", "synthetic" },
   "clusters": [ { "id", "label", "terms": [...], "color", "count", "cx", "cy" } ],
   "nodes":    [ { "id", "source", "title", "created_at", "msg_count", "cluster", "x", "y", "density" } ],
   "edges":    [ { "source": id, "target": id, "weight": cosine_sim, "bridge": bool } ]
@@ -94,7 +94,9 @@ The pipeline → viewer boundary is `viewer/public/map.json`:
 
 `meta.sources` keys are derived from the records rather than hardcoded, so the
 set depends on what was imported — `claude-code` only appears after `make
-map-code`. `nodes[].density` is *not* written by `make_map.py`; the
+map-code`. `meta.synthetic` is true when the input folder holds the `.synthetic`
+marker `sample_data.py` writes (and no Claude Code sessions were added); the
+viewer then labels the map and transcripts as demo data. `nodes[].density` is *not* written by `make_map.py`; the
 `categorize.py` pass adds it afterward, so both emitters matter.
 
 Changing this shape means touching both sides — `make_map.py` and

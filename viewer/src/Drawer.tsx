@@ -4,12 +4,13 @@ import { SOURCE_COLORS, SOURCE_LABELS } from "./types";
 
 interface Props {
   node: NodeDatum | null;
+  synthetic: boolean;
   onClose: () => void;
 }
 
 const cache = new Map<string, Transcript>();
 
-export default function Drawer({ node, onClose }: Props) {
+export default function Drawer({ node, synthetic, onClose }: Props) {
   const [transcript, setTranscript] = useState<Transcript | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -55,13 +56,18 @@ export default function Drawer({ node, onClose }: Props) {
         </button>
       </header>
       <h2 className="drawer-title">{node.title}</h2>
+      {synthetic && (
+        <p className="demo-banner">
+          Synthetic conversation, generated for this demo. Not a real person's chat.
+        </p>
+      )}
 
       <div className="transcript">
         {loading && <p className="muted">Loading…</p>}
         {!loading && !transcript && <p className="muted">Transcript unavailable.</p>}
         {transcript?.messages.map((m, i) => (
           <div key={i} className={`turn turn-${m.role}`}>
-            <div className="turn-role">{m.role === "user" ? "You" : "Assistant"}</div>
+            <div className="turn-role">{m.role === "user" ? (synthetic ? "User" : "You") : "Assistant"}</div>
             <div className="turn-text">{m.text}</div>
           </div>
         ))}

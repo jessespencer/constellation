@@ -38,6 +38,7 @@ export interface MapData {
     n: number;
     sources: Partial<Record<Source, number>>;
     n_clusters: number;
+    synthetic?: boolean; // built from sample_data.py output — label as demo
   };
   clusters: ClusterMeta[];
   nodes: NodeDatum[];
