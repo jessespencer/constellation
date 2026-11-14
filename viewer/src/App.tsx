@@ -791,11 +791,11 @@ export default function App() {
 
         <a
           className="credit"
-          href="https://jessedestroys.com/"
+          href="https://jessespencer.dev/"
           target="_blank"
           rel="noopener noreferrer"
         >
-          built by jessedestroys.com
+          built by jessespencer.dev
         </a>
       </div>
 
